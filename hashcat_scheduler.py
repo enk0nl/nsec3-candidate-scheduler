@@ -444,8 +444,8 @@ def main() -> int:
                 next_skip = arm.next_skip + effective_limit
                 progress_source = "limit"
         elif arm.arm_type == "brute_force":
-            if isinstance(parsed_restore, int) and parsed_restore > 0:
-                next_skip = max(next_skip, parsed_restore)
+            if isinstance(parsed_restore, int) and parsed_restore > arm.next_skip:
+                next_skip = min(parsed_restore, arm.keyspace)
                 progress_source = "restore_point"
             elif (
                 isinstance(parsed_progress_cur, int) and parsed_progress_cur > 0
@@ -557,7 +557,7 @@ def main() -> int:
         else:
             print("  phase: adaptive (score based on marginal new cracks)")
         print(f"  arm: {arm.name} ({arm.arm_type})")
-        print(f"  skip: {skip_before} -> {arm.next_skip} / keyspace={arm.keyspace if arm.keyspace is not None else 'unknown'}")
+        print(f"  skip: {skip_before} -> {arm.next_skip} / keyspace={arm.keyspace if arm.keyspace is not None else 'unknown'} source={progress_source}")
         print(f"  runtime: {runtime_seconds:.1f}s, exit={rc} {exit_meaning}")
         print(f"  cracks: arm_local={arm_local_cracks}, marginal_new={marginal_new_cracks}, total={total_cracks}, reward={reward:.3f}/s")
         print(f"  score: {score_before:.3f} -> {arm.score:.3f}")
