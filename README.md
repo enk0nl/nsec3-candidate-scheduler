@@ -29,10 +29,11 @@ Current brute-force example targets RFC1035-compatible label characters: lowerca
 
 Adaptive mode uses:
 
-- One warm-up slice per non-exhausted arm
+- One warm-up slice per non-exhausted arm, in config order
+- During warm-up, each arm uses an arm-local temporary potfile (`<out_dir>/warmup_potfiles/<arm_name>.pot`)
 - Reward per slice:
-
-`reward = new_cracks / runtime_seconds`
+  - Warm-up: `reward = arm_local_cracks / runtime_seconds`
+  - Adaptive phase: `reward = marginal_new_cracks / runtime_seconds` using shared `run.pot`
 
 - Exponential recency update:
 
@@ -43,7 +44,7 @@ Adaptive mode uses:
 ## Reproducibility
 
 - Set `random_seed` in config and/or `--random-seed` on CLI.
-- Scheduler randomness (warm-up shuffle and epsilon exploration) is deterministic for a fixed seed.
+- Scheduler randomness for epsilon exploration is deterministic for a fixed seed.
 - Crack throughput/results can still vary slightly between runs because runtime-limited hashcat execution depends on hardware scheduling, thermal state, driver behavior, and timing.
 
 ## Repository structure

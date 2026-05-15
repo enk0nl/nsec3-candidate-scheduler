@@ -4,7 +4,7 @@ This directory contains a minimal reproducible experiment config for `hashcat_sc
 
 ## What the config is
 
-`example_config.json` defines three attack arms plus scheduler parameters (`random_seed`, `randomize_warmup`, `alpha`, `epsilon`) used for fixed-runtime-slice comparisons.
+`example_config.json` defines three attack arms plus scheduler parameters (`random_seed`, `alpha`, `epsilon`) used for fixed-runtime-slice comparisons.
 
 ## Arms in `example_config.json`
 
@@ -25,11 +25,13 @@ This directory contains a minimal reproducible experiment config for `hashcat_sc
   - `sequential`
   - `round_robin`
   - `adaptive`
-- Adaptive mode runs a warm-up slice for every non-exhausted arm before score-based selection.
-- Reward is computed per slice as:
-  - `new_cracks / runtime_seconds`
+- Adaptive mode runs a warm-up slice for every non-exhausted arm in config order before score-based selection.
+- Warm-up scoring uses arm-local temporary potfiles (`<out_dir>/warmup_potfiles/<arm_name>.pot`) with reward:
+  - `arm_local_cracks / runtime_seconds`
+- Adaptive phase uses the shared `run.pot` and marginal scoring:
+  - `marginal_new_cracks / runtime_seconds`
 - Set a reproducible scheduler seed in config with `"random_seed"`, or override with CLI `--random-seed`.
-- Scheduler choices (warm-up shuffle/exploration decisions) are reproducible with the same seed and inputs.
+- Scheduler exploration choices are reproducible with the same seed and inputs.
 - Exact cracking results can still vary slightly because runtime-limited hashcat execution is not perfectly deterministic.
 
 ## Tracking details

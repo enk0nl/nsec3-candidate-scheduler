@@ -1,6 +1,5 @@
 {
   "random_seed": 1337,
-  "randomize_warmup": false,
   "alpha": 0.2,
   "epsilon": 0.1,
   "arms": [
