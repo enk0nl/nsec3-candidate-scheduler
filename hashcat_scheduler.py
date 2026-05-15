@@ -104,8 +104,8 @@ def run_cmd(cmd: List[str], stdin_text: Optional[str] = None) -> Tuple[int, str]
     return p.returncode, p.stdout
 
 
-def compute_bruteforce_keyspace(hash_mode: int, hashes: str, arm: ArmState) -> int:
-    cmd = ["hashcat", "-m", str(hash_mode), "-a", "3", hashes, arm.config["mask"], "--keyspace"]
+def compute_bruteforce_keyspace(arm: ArmState) -> int:
+    cmd = ["hashcat", "--keyspace", "-a", "3", arm.config["mask"]]
     charset_keys = [("custom_charset1", "custom_charset_1"), ("custom_charset2", "custom_charset_2"), ("custom_charset3", "custom_charset_3"), ("custom_charset4", "custom_charset_4")]
     for legacy_key, underscored_key in charset_keys:
         cs_value = arm.config.get(underscored_key, arm.config.get(legacy_key))
@@ -204,7 +204,7 @@ def main() -> int:
         if st.arm_type == "dictionary":
             st.keyspace = count_lines(st.config["wordlist"])
         elif st.arm_type == "brute_force":
-            st.keyspace = compute_bruteforce_keyspace(args.hash_mode, args.hashes, st)
+            st.keyspace = compute_bruteforce_keyspace(st)
         else:
             print(f"unknown arm type in config: {st.arm_type}", file=sys.stderr)
             return 2
