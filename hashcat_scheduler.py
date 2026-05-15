@@ -433,6 +433,7 @@ def main() -> int:
         parsed_progress_total = hashcat_fields["hashcat_progress_end"] if isinstance(hashcat_fields["hashcat_progress_end"], int) else None
 
         progress_source = "unknown"
+        brute_force_slice_end = None
         scaled_position = None
         next_skip = arm.next_skip
         effective_limit = int(limit)
@@ -453,10 +454,13 @@ def main() -> int:
                 and isinstance(parsed_progress_total, int) and parsed_progress_total > 0
                 and isinstance(arm.keyspace, int) and arm.keyspace > 0
             ):
-                scaled_position = math.floor((parsed_progress_cur / parsed_progress_total) * arm.keyspace)
-                next_skip = max(arm.next_skip, scaled_position)
+                brute_force_slice_end = min(skip_before + effective_limit, arm.keyspace)
+                scaled_position = math.floor(
+                    (parsed_progress_cur / parsed_progress_total) * brute_force_slice_end
+                )
+                next_skip = max(skip_before, scaled_position)
                 next_skip = min(next_skip, arm.keyspace)
-                progress_source = "progress_scaled_to_keyspace"
+                progress_source = "progress_scaled_to_slice_end"
             elif rc == 1:
                 next_skip = arm.next_skip + effective_limit
                 progress_source = "limit_fallback_exhausted"
@@ -515,6 +519,7 @@ def main() -> int:
             "parsed_progress_cur": parsed_progress_cur,
             "parsed_progress_total": parsed_progress_total,
             "parsed_restore_point": parsed_restore,
+            "brute_force_slice_end": brute_force_slice_end,
             "scaled_position": scaled_position,
             "new_cracks": marginal_new_cracks,
             "arm_local_cracks": arm_local_cracks,
