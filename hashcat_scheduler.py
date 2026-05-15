@@ -12,6 +12,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
+import math
 import os
 import random
 import shlex
@@ -399,23 +400,42 @@ def main() -> int:
             total_cracks = len(after_hits)
 
         parsed_restore = hashcat_fields["hashcat_restore_point"]
-        parsed_progress = None
-        prog_val = hashcat_fields["hashcat_progress_cur"]
-        if isinstance(prog_val, int):
-            parsed_progress = prog_val
+        parsed_progress_cur = hashcat_fields["hashcat_progress_cur"] if isinstance(hashcat_fields["hashcat_progress_cur"], int) else None
+        parsed_progress_total = hashcat_fields["hashcat_progress_end"] if isinstance(hashcat_fields["hashcat_progress_end"], int) else None
 
         progress_source = "unknown"
         next_skip = arm.next_skip
-        if isinstance(parsed_restore, int):
-            next_skip = max(next_skip, parsed_restore)
-            progress_source = "restore_point"
-        elif isinstance(parsed_progress, int):
-            next_skip = max(next_skip, parsed_progress)
-            progress_source = "progress"
-        elif arm.arm_type in ("dictionary", "brute_force"):
-            # Conservative fallback: advance by planned limit if no better parser signal exists.
-            next_skip = arm.next_skip + int(limit)
-            progress_source = "limit"
+        effective_limit = int(limit)
+        if arm.arm_type == "dictionary":
+            if isinstance(parsed_restore, int):
+                next_skip = max(next_skip, parsed_restore)
+                progress_source = "restore_point"
+            else:
+                # Conservative fallback: advance by planned limit if no better parser signal exists.
+                next_skip = arm.next_skip + effective_limit
+                progress_source = "limit"
+        elif arm.arm_type == "brute_force":
+            if isinstance(parsed_restore, int) and parsed_restore > 0:
+                next_skip = max(next_skip, parsed_restore)
+                progress_source = "restore_point"
+            elif (
+                isinstance(parsed_progress_cur, int) and parsed_progress_cur > 0
+                and isinstance(parsed_progress_total, int) and parsed_progress_total > 0
+                and isinstance(arm.keyspace, int) and arm.keyspace > 0
+            ):
+                scaled_advance = math.floor((parsed_progress_cur / parsed_progress_total) * arm.keyspace)
+                advance = min(scaled_advance, effective_limit)
+                next_skip = min(arm.next_skip + advance, arm.keyspace)
+                progress_source = "progress_scaled_to_keyspace"
+            elif rc == 1:
+                next_skip = arm.next_skip + effective_limit
+                progress_source = "limit_fallback_exhausted"
+            else:
+                progress_source = "unknown"
+        else:
+            if isinstance(parsed_restore, int):
+                next_skip = max(next_skip, parsed_restore)
+                progress_source = "restore_point"
 
         arm.next_skip = next_skip
         if arm.keyspace is not None and arm.next_skip >= arm.keyspace:
@@ -449,13 +469,15 @@ def main() -> int:
             "hash_mode": args.hash_mode,
             "skip_before": skip_before,
             "limit": int(limit),
+            "effective_limit": effective_limit,
             "next_skip_after": arm.next_skip,
             "keyspace": arm.keyspace,
             "runtime_seconds": runtime_seconds,
             "exit_code": rc,
             "exit_meaning": exit_meaning,
             "progress_source": progress_source,
-            "parsed_progress": parsed_progress,
+            "parsed_progress_cur": parsed_progress_cur,
+            "parsed_progress_total": parsed_progress_total,
             "parsed_restore_point": parsed_restore,
             "new_cracks": marginal_new_cracks,
             "arm_local_cracks": arm_local_cracks,
