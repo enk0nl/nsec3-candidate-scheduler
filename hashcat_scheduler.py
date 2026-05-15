@@ -433,6 +433,7 @@ def main() -> int:
         parsed_progress_total = hashcat_fields["hashcat_progress_end"] if isinstance(hashcat_fields["hashcat_progress_end"], int) else None
 
         progress_source = "unknown"
+        scaled_position = None
         next_skip = arm.next_skip
         effective_limit = int(limit)
         if arm.arm_type == "dictionary":
@@ -452,9 +453,9 @@ def main() -> int:
                 and isinstance(parsed_progress_total, int) and parsed_progress_total > 0
                 and isinstance(arm.keyspace, int) and arm.keyspace > 0
             ):
-                scaled_advance = math.floor((parsed_progress_cur / parsed_progress_total) * arm.keyspace)
-                advance = min(scaled_advance, effective_limit)
-                next_skip = min(arm.next_skip + advance, arm.keyspace)
+                scaled_position = math.floor((parsed_progress_cur / parsed_progress_total) * arm.keyspace)
+                next_skip = max(arm.next_skip, scaled_position)
+                next_skip = min(next_skip, arm.keyspace)
                 progress_source = "progress_scaled_to_keyspace"
             elif rc == 1:
                 next_skip = arm.next_skip + effective_limit
@@ -514,6 +515,7 @@ def main() -> int:
             "parsed_progress_cur": parsed_progress_cur,
             "parsed_progress_total": parsed_progress_total,
             "parsed_restore_point": parsed_restore,
+            "scaled_position": scaled_position,
             "new_cracks": marginal_new_cracks,
             "arm_local_cracks": arm_local_cracks,
             "marginal_new_cracks": marginal_new_cracks,
