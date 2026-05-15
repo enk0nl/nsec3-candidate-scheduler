@@ -7,8 +7,9 @@ A lightweight experimental scheduler for comparative hash cracking experiments u
 - Fixed runtime slices (default 60 seconds)
 - Multiple scheduling modes (`sequential`, `round_robin`, `adaptive`)
 - Reproducible scheduler decisions via fixed random seeds
-- Per-run potfile/outfile isolation in `--out-dir`
+- Per-run potfile isolation in `--out-dir` (no default hashcat outfile)
 - Per-slice JSONL metrics logging
+- Per-job raw hashcat logs (`stdout`/`stderr`) in `hashcat_logs/`
 - Brute-force keyspace tracking (`hashcat --keyspace`)
 - Dictionary line-based skip/limit tracking
 
@@ -75,11 +76,15 @@ python3 hashcat_scheduler.py \
 
 Each run writes to `--out-dir`:
 
-- `run.pot` (run-local potfile)
-- `hashcat.out` (run-local outfile)
+- `run.pot` (run-local potfile; canonical cracked-output store)
+- `hashcat_logs/job_XXXXXX.log` (raw hashcat command output and parsed status JSON objects)
 - `jobs.jsonl` (per-slice execution metrics)
 - `hits.jsonl` (newly cracked entries)
 - `run_summary.json` (final aggregate summary)
+
+`jobs.jsonl` now includes parsed hashcat status fields (progress/speed/recovery/status/session/runtime estimates) when available, with `null` values when unavailable.
+
+Use `--verbose` to print extra scheduler details (command + parsed status summary) without streaming full live hashcat output.
 
 ## Important limitations
 
