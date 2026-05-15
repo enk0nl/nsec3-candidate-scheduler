@@ -34,7 +34,10 @@ This directory contains a minimal reproducible experiment config for `hashcat_sc
 
 ## Tracking details
 
-- Every scheduler run creates its own run potfile in `--out-dir` (`run.pot`), plus `hashcat.out`, `jobs.jsonl`, `hits.jsonl`, and `run_summary.json`.
+- Every scheduler run creates its own run potfile in `--out-dir` (`run.pot`), plus `jobs.jsonl`, `hits.jsonl`, `run_summary.json`, and per-job logs in `hashcat_logs/`.
+- `hashcat.out` is not created by default; the potfile is the canonical cracked-output store.
+- `jobs.jsonl` stores parsed hashcat status/statistics fields for downstream plotting.
+- `--verbose` adds scheduler-level detail (command + parsed status summary) without live streaming raw hashcat output.
 - Brute-force masks use hashcat keyspace tracking (`--keyspace`) with skip/limit progression.
 - Dictionary attacks (including pre-generated PCFG files) use line-based skip/limit tracking.
 

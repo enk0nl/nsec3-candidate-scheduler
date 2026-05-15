@@ -2,7 +2,7 @@
 """Minimal adaptive hashcat scheduler for fixed runtime slice experiments.
 
 Notes:
-- This script uses one shared potfile/outfile per run to avoid double-counting cracks.
+- This script uses one shared potfile per run to avoid double-counting cracks.
 - PCFG candidate files should be pre-generated and configured as dictionary-style arms.
 """
 
@@ -14,6 +14,7 @@ import datetime as dt
 import json
 import os
 import random
+import shlex
 import subprocess
 import sys
 import time
@@ -62,23 +63,22 @@ def count_lines(path: str) -> int:
     return n
 
 
-def parse_status_json(output: str) -> Dict[str, Any]:
-    last: Dict[str, Any] = {}
-    for line in output.splitlines():
+def parse_hashcat_status_lines(output_text: str) -> List[Dict[str, Any]]:
+    statuses: List[Dict[str, Any]] = []
+    for line in output_text.splitlines():
         line = line.strip()
         if not line:
             continue
-        if line.startswith("{") and line.endswith("}"):
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(obj, dict) and "status" in obj:
-                last = obj
-    return last
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            statuses.append(obj)
+    return statuses
 
 
-def parse_hashcat_outfile(path: str) -> Dict[str, str]:
+def parse_potfile(path: str) -> Dict[str, str]:
     out: Dict[str, str] = {}
     if not os.path.exists(path):
         return out
@@ -92,16 +92,24 @@ def parse_hashcat_outfile(path: str) -> Dict[str, str]:
     return out
 
 
-def run_cmd(cmd: List[str], stdin_text: Optional[str] = None) -> Tuple[int, str]:
+def run_cmd(cmd: List[str], stdin_text: Optional[str] = None) -> Tuple[int, str, str]:
     p = subprocess.run(
         cmd,
         input=stdin_text,
         text=True,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         check=False,
     )
-    return p.returncode, p.stdout
+    return p.returncode, p.stdout, p.stderr
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
 
 
 def compute_bruteforce_keyspace(arm: ArmState) -> int:
@@ -112,9 +120,9 @@ def compute_bruteforce_keyspace(arm: ArmState) -> int:
         if cs_value is not None:
             idx = underscored_key[-1]
             cmd.extend([f"-{idx}", str(cs_value)])
-    rc, out = run_cmd(cmd)
+    rc, out, err = run_cmd(cmd)
     if rc != 0:
-        raise RuntimeError(f"hashcat --keyspace failed for {arm.name}: rc={rc}, out={out[:400]}")
+        raise RuntimeError(f"hashcat --keyspace failed for {arm.name}: rc={rc}, out={out[:400]} err={err[:400]}")
     for tok in out.split():
         if tok.isdigit():
             return int(tok)
@@ -162,6 +170,7 @@ def main() -> int:
     ap.add_argument("--warmup-randomize", action="store_true")
     ap.add_argument("--random-seed", type=int)
     ap.add_argument("--default-limit", type=int, default=1000000)
+    ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
     if not args.total_slices and not args.total_seconds:
@@ -173,12 +182,13 @@ def main() -> int:
 
     ensure_dir(args.out_dir)
     potfile = os.path.join(args.out_dir, "run.pot")
-    outfile = os.path.join(args.out_dir, "hashcat.out")
+    hashcat_logs_dir = os.path.join(args.out_dir, "hashcat_logs")
     jobs_path = os.path.join(args.out_dir, "jobs.jsonl")
     hits_path = os.path.join(args.out_dir, "hits.jsonl")
     summary_path = os.path.join(args.out_dir, "run_summary.json")
 
-    for p in (potfile, outfile, jobs_path, hits_path):
+    ensure_dir(hashcat_logs_dir)
+    for p in (potfile, jobs_path, hits_path):
         if os.path.exists(p):
             os.remove(p)
 
@@ -215,9 +225,10 @@ def main() -> int:
 
     start_ts = time.time()
     start_iso = utc_now()
-    prev_hits = parse_hashcat_outfile(outfile)
+    prev_hits = parse_potfile(potfile)
     total_cracks = len(prev_hits)
     job_id = 0
+    total_hashcat_status_events = 0
 
     while True:
         if args.total_slices and job_id >= args.total_slices:
@@ -246,7 +257,6 @@ def main() -> int:
             "--runtime", str(args.slice_seconds),
             "--status", "--status-json", "--status-timer", "5",
             "--potfile-path", potfile,
-            "-o", outfile,
             args.hashes,
         ]
 
@@ -268,11 +278,31 @@ def main() -> int:
 
         score_before = arm.score
         t0 = time.time()
-        rc, out = run_cmd(cmd)
+        cmd_pretty = shlex.join(cmd)
+        if args.verbose:
+            print(f"[job {job_id + 1}] command: {cmd_pretty}")
+        rc, stdout_text, stderr_text = run_cmd(cmd)
         runtime_seconds = max(0.0, time.time() - t0)
-        status = parse_status_json(out)
+        status_events = parse_hashcat_status_lines(stdout_text + "\n" + stderr_text)
+        total_hashcat_status_events += len(status_events)
+        status = status_events[-1] if status_events else {}
+        log_path = os.path.join(hashcat_logs_dir, f"job_{job_id + 1:06d}.log")
+        with open(log_path, "w", encoding="utf-8") as logf:
+            logf.write(f"timestamp: {utc_now()}\n")
+            logf.write(f"job_id: {job_id + 1}\n")
+            logf.write(f"arm: {arm.name}\n")
+            logf.write(f"attack_type: {arm.arm_type}\n")
+            logf.write(f"command: {cmd_pretty}\n")
+            logf.write(f"exit_code: {rc}\n")
+            logf.write("parsed_status_objects:\n")
+            for ev in status_events:
+                logf.write(json.dumps(ev, sort_keys=True) + "\n")
+            logf.write("\n--- stdout ---\n")
+            logf.write(stdout_text)
+            logf.write("\n--- stderr ---\n")
+            logf.write(stderr_text)
 
-        after_hits = parse_hashcat_outfile(outfile)
+        after_hits = parse_potfile(potfile)
         new_pairs = [(h, v) for h, v in after_hits.items() if h not in prev_hits]
         prev_hits = after_hits
         new_cracks = len(new_pairs)
@@ -339,6 +369,27 @@ def main() -> int:
             "score_before": score_before,
             "score_after": arm.score,
             "exhausted": arm.exhausted,
+            "hashcat_status": status.get("status"),
+            "hashcat_status_text": status.get("status_text"),
+            "hashcat_session": status.get("session"),
+            "hashcat_guess_base": status.get("guess_base"),
+            "hashcat_guess_base_count": _safe_int(status.get("guess_base_count")),
+            "hashcat_guess_base_offset": _safe_int(status.get("guess_base_offset")),
+            "hashcat_guess_mask_length": _safe_int(status.get("guess_mask_length")),
+            "hashcat_progress_cur": _safe_int(status.get("progress", [None, None])[0] if isinstance(status.get("progress"), list) and status.get("progress") else parsed_progress),
+            "hashcat_progress_end": _safe_int(status.get("progress", [None, None])[1] if isinstance(status.get("progress"), list) and len(status.get("progress")) > 1 else None),
+            "hashcat_progress_percent": status.get("progress_percent"),
+            "hashcat_restore_point": _safe_int(status.get("restore_point")),
+            "hashcat_restore_total": _safe_int(status.get("restore_total")),
+            "hashcat_speed_raw": status.get("speed"),
+            "hashcat_speed_hps": _safe_int(status.get("speed", [None])[0] if isinstance(status.get("speed"), list) and status.get("speed") else status.get("speed")),
+            "hashcat_recovered_hashes_cur": _safe_int(status.get("recovered_hashes", [None, None])[0] if isinstance(status.get("recovered_hashes"), list) and status.get("recovered_hashes") else None),
+            "hashcat_recovered_hashes_total": _safe_int(status.get("recovered_hashes", [None, None])[1] if isinstance(status.get("recovered_hashes"), list) and len(status.get("recovered_hashes")) > 1 else None),
+            "hashcat_recovered_salts_cur": _safe_int(status.get("recovered_salts", [None, None])[0] if isinstance(status.get("recovered_salts"), list) and status.get("recovered_salts") else None),
+            "hashcat_recovered_salts_total": _safe_int(status.get("recovered_salts", [None, None])[1] if isinstance(status.get("recovered_salts"), list) and len(status.get("recovered_salts")) > 1 else None),
+            "hashcat_devices": status.get("devices"),
+            "hashcat_runtime_start": status.get("time_start"),
+            "hashcat_runtime_estimated_stop": status.get("estimated_stop"),
         }
         with open(jobs_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
@@ -347,11 +398,20 @@ def main() -> int:
             for h, v in new_pairs:
                 f.write(json.dumps({"timestamp": utc_now(), "job_id": job_id, "arm": arm.name, "hash": h, "value": v}) + "\n")
 
-        print(
-            f"job={job_id} arm={arm.name} type={arm.arm_type} skip={skip_before} limit={limit} "
-            f"runtime={runtime_seconds:.2f} new={new_cracks} total={total_cracks} "
-            f"reward={reward:.6f} score={arm.score:.6f} exhausted={str(arm.exhausted).lower()}"
-        )
+        speed_hps = rec["hashcat_speed_hps"]
+        speed_display = f"{(speed_hps / 1_000_000):.1f} MH/s" if isinstance(speed_hps, int) else "unknown"
+        status_text = rec["hashcat_status_text"] or rec["hashcat_status"] or "unknown"
+        progress_cur = rec["hashcat_progress_cur"] if rec["hashcat_progress_cur"] is not None else "unknown"
+        progress_end = rec["hashcat_progress_end"] if rec["hashcat_progress_end"] is not None else (arm.keyspace if arm.keyspace is not None else "unknown")
+        print(f"[job {job_id}] {args.schedule} / selected {selection_reason}")
+        print(f"  arm: {arm.name} ({arm.arm_type})")
+        print(f"  skip: {skip_before} -> {arm.next_skip} / keyspace={arm.keyspace if arm.keyspace is not None else 'unknown'}")
+        print(f"  runtime: {runtime_seconds:.1f}s, exit={rc} {exit_meaning}")
+        print(f"  cracks: +{new_cracks} new, total={total_cracks}, reward={reward:.3f}/s")
+        print(f"  score: {score_before:.3f} -> {arm.score:.3f}")
+        print(f"  hashcat: status={status_text}, progress={progress_cur}/{progress_end}, speed={speed_display}")
+        if args.verbose:
+            print(f"  status_events: {len(status_events)}, parsed_status={json.dumps(status, sort_keys=True) if status else 'unknown'}")
 
         if rc not in (0, 1, 4):
             print(f"warning: arm={arm.name} rc={rc}, continuing", file=sys.stderr)
@@ -370,6 +430,9 @@ def main() -> int:
         "total_runtime_seconds": total_runtime,
         "total_slices": job_id,
         "total_cracks": total_cracks,
+        "hashcat_logs_dir": hashcat_logs_dir,
+        "potfile_path": potfile,
+        "total_hashcat_status_events": total_hashcat_status_events,
         "arms": {
             a.name: {
                 "score": a.score,
@@ -379,6 +442,7 @@ def main() -> int:
                 "keyspace": a.keyspace,
                 "exhausted": a.exhausted,
                 "total_new_cracks": a.total_new_cracks,
+                "speed_estimate_hps": (a.total_new_cracks / a.runtime) if a.runtime > 0 else None,
             }
             for a in states
         },
