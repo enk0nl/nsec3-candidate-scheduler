@@ -201,13 +201,14 @@ def merge_potfile_entries(dest_path: str, source_path: str) -> Tuple[int, int]:
 
 
 def compute_bruteforce_keyspace(arm: ArmState) -> int:
-    cmd = ["hashcat", "--keyspace", "-a", "3", arm.config["mask"]]
+    cmd = ["hashcat", "--keyspace", "-a", "3"]
     charset_keys = [("custom_charset1", "custom_charset_1"), ("custom_charset2", "custom_charset_2"), ("custom_charset3", "custom_charset_3"), ("custom_charset4", "custom_charset_4")]
     for legacy_key, underscored_key in charset_keys:
         cs_value = arm.config.get(underscored_key, arm.config.get(legacy_key))
         if cs_value is not None:
             idx = underscored_key[-1]
             cmd.extend([f"-{idx}", str(cs_value)])
+    cmd.append(arm.config["mask"])
     rc, out, err = run_cmd(cmd)
     if rc != 0:
         raise RuntimeError(f"hashcat --keyspace failed for {arm.name}: rc={rc}, out={out[:300]}, err={err[:300]}")
