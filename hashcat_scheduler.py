@@ -185,6 +185,20 @@ def parse_hashcat_outfile(path: str) -> Dict[str, str]:
     return out
 
 
+def merge_potfile_entries(dest_path: str, source_path: str) -> Tuple[int, int]:
+    """Merge source potfile entries into destination, deduplicated by hash."""
+    dest_entries = parse_hashcat_outfile(dest_path)
+    before = len(dest_entries)
+    source_entries = parse_hashcat_outfile(source_path)
+    dest_entries.update(source_entries)
+    after = len(dest_entries)
+    ensure_dir(os.path.dirname(dest_path))
+    with open(dest_path, "w", encoding="utf-8") as f:
+        for h, v in dest_entries.items():
+            f.write(f"{h}:{v}\n")
+    return len(source_entries), after - before
+
+
 def compute_bruteforce_keyspace(arm: ArmState) -> int:
     cmd = ["hashcat", "--keyspace", "-a", "3", arm.config["mask"]]
     charset_keys = [("custom_charset1", "custom_charset_1"), ("custom_charset2", "custom_charset_2"), ("custom_charset3", "custom_charset_3"), ("custom_charset4", "custom_charset_4")]
@@ -240,7 +254,6 @@ def main() -> int:
     ap.add_argument("--total-seconds", type=int)
     ap.add_argument("--alpha", type=float)
     ap.add_argument("--epsilon", type=float)
-    ap.add_argument("--warmup-randomize", action="store_true")
     ap.add_argument("--random-seed", type=int)
     ap.add_argument("--default-limit", type=int, default=1000000)
     ap.add_argument("--verbose", action="store_true")
@@ -255,12 +268,14 @@ def main() -> int:
 
     ensure_dir(args.out_dir)
     potfile = os.path.join(args.out_dir, "run.pot")
+    warmup_potfiles_dir = os.path.join(args.out_dir, "warmup_potfiles")
     hashcat_logs_dir = os.path.join(args.out_dir, "hashcat_logs")
     jobs_path = os.path.join(args.out_dir, "jobs.jsonl")
     hits_path = os.path.join(args.out_dir, "hits.jsonl")
     summary_path = os.path.join(args.out_dir, "run_summary.json")
 
     ensure_dir(hashcat_logs_dir)
+    ensure_dir(warmup_potfiles_dir)
     for p in (potfile, jobs_path, hits_path):
         if os.path.exists(p):
             os.remove(p)
@@ -269,7 +284,6 @@ def main() -> int:
     alpha = args.alpha if args.alpha is not None else float(cfg.get("alpha", 0.2))
     epsilon = args.epsilon if args.epsilon is not None else float(cfg.get("epsilon", 0.1))
     random_seed = args.random_seed if args.random_seed is not None else int(cfg.get("random_seed", 0))
-    randomize_warmup = bool(cfg.get("randomize_warmup", False)) or args.warmup_randomize
     rng = random.Random(random_seed)
 
     # Scheduler-level arm selection decisions are reproducible with the same seed and inputs.
@@ -293,8 +307,6 @@ def main() -> int:
             return 2
 
     warmup = [a.name for a in states if not a.exhausted]
-    if randomize_warmup:
-        rng.shuffle(warmup)
 
     start_ts = time.time()
     start_iso = utc_now()
@@ -324,12 +336,21 @@ def main() -> int:
                 continue
             limit = min(limit, remain)
 
+        is_adaptive_warmup = args.schedule == "adaptive" and selection_reason == "warmup"
+        phase = "warmup" if is_adaptive_warmup else "adaptive"
+        arm_potfile = (
+            os.path.join(warmup_potfiles_dir, f"{arm.name}.pot")
+            if is_adaptive_warmup
+            else potfile
+        )
+        potfile_scope = "arm_local" if is_adaptive_warmup else "shared"
+
         cmd = [
             "hashcat", "-m", str(args.hash_mode),
             "-a", "0" if arm.arm_type == "dictionary" else "3",
             "--runtime", str(args.slice_seconds),
             "--status", "--status-json", "--status-timer", "5",
-            "--potfile-path", potfile,
+            "--potfile-path", arm_potfile,
             args.hashes,
         ]
 
@@ -361,11 +382,21 @@ def main() -> int:
         status = status_events[-1] if status_events else {}
         hashcat_fields = parse_hashcat_summary_fields(status)
 
-        after_hits = parse_hashcat_outfile(potfile)
-        new_pairs = [(h, v) for h, v in after_hits.items() if h not in prev_hits]
-        prev_hits = after_hits
-        new_cracks = len(new_pairs)
-        total_cracks = len(after_hits)
+        arm_after_hits = parse_hashcat_outfile(arm_potfile)
+        arm_local_cracks = len(arm_after_hits)
+        marginal_new_cracks = 0
+        new_pairs: List[Tuple[str, str]] = []
+        if is_adaptive_warmup:
+            _, merged_new = merge_potfile_entries(potfile, arm_potfile)
+            marginal_new_cracks = merged_new
+            total_cracks = len(parse_hashcat_outfile(potfile))
+            prev_hits = parse_hashcat_outfile(potfile)
+        else:
+            after_hits = parse_hashcat_outfile(potfile)
+            new_pairs = [(h, v) for h, v in after_hits.items() if h not in prev_hits]
+            prev_hits = after_hits
+            marginal_new_cracks = len(new_pairs)
+            total_cracks = len(after_hits)
 
         parsed_restore = hashcat_fields["hashcat_restore_point"]
         parsed_progress = None
@@ -392,11 +423,15 @@ def main() -> int:
         if rc == 1:
             arm.exhausted = True
 
-        reward = (new_cracks / runtime_seconds) if runtime_seconds > 0 else 0.0
+        if is_adaptive_warmup:
+            reward_used_for_score = (arm_local_cracks / runtime_seconds) if runtime_seconds > 0 else 0.0
+        else:
+            reward_used_for_score = (marginal_new_cracks / runtime_seconds) if runtime_seconds > 0 else 0.0
+        reward = reward_used_for_score
         arm.score = arm.score + alpha * (reward - arm.score)
         arm.jobs_run += 1
         arm.runtime += runtime_seconds
-        arm.total_new_cracks += new_cracks
+        arm.total_new_cracks += marginal_new_cracks
 
         job_id += 1
         exit_meaning = EXIT_MEANINGS.get(rc, "error")
@@ -407,6 +442,8 @@ def main() -> int:
             "schedule": args.schedule,
             "random_seed": random_seed,
             "selection_reason": selection_reason,
+            "phase": phase,
+            "potfile_scope": potfile_scope,
             "arm": arm.name,
             "attack_type": arm.arm_type,
             "hash_mode": args.hash_mode,
@@ -420,7 +457,10 @@ def main() -> int:
             "progress_source": progress_source,
             "parsed_progress": parsed_progress,
             "parsed_restore_point": parsed_restore,
-            "new_cracks": new_cracks,
+            "new_cracks": marginal_new_cracks,
+            "arm_local_cracks": arm_local_cracks,
+            "marginal_new_cracks": marginal_new_cracks,
+            "reward_used_for_score": reward_used_for_score,
             "total_cracks": total_cracks,
             "reward": reward,
             "score_before": score_before,
@@ -455,10 +495,14 @@ def main() -> int:
         progress_end = hashcat_fields["hashcat_progress_end"] if hashcat_fields["hashcat_progress_end"] is not None else "unknown"
         status_text = hashcat_fields["hashcat_status_text"] or hashcat_fields["hashcat_status"] or "unknown"
         print(f"[job {job_id}] {args.schedule} / selected {selection_reason}")
+        if is_adaptive_warmup:
+            print("  phase: warm-up (score based on arm-local cracks)")
+        else:
+            print("  phase: adaptive (score based on marginal new cracks)")
         print(f"  arm: {arm.name} ({arm.arm_type})")
         print(f"  skip: {skip_before} -> {arm.next_skip} / keyspace={arm.keyspace if arm.keyspace is not None else 'unknown'}")
         print(f"  runtime: {runtime_seconds:.1f}s, exit={rc} {exit_meaning}")
-        print(f"  cracks: +{new_cracks} new, total={total_cracks}, reward={reward:.3f}/s")
+        print(f"  cracks: arm_local={arm_local_cracks}, marginal_new={marginal_new_cracks}, total={total_cracks}, reward={reward:.3f}/s")
         print(f"  score: {score_before:.3f} -> {arm.score:.3f}")
         print(f"  hashcat: status={status_text}, progress={progress_cur}/{progress_end}, speed={format_speed_hps(hashcat_fields['hashcat_speed_hps'])}")
         if args.verbose:
@@ -477,7 +521,6 @@ def main() -> int:
     summary = {
         "config": cfg,
         "random_seed": random_seed,
-        "randomize_warmup": randomize_warmup,
         "start_timestamp": start_iso,
         "end_timestamp": end_iso,
         "total_runtime_seconds": total_runtime,
