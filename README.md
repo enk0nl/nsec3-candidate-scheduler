@@ -23,7 +23,9 @@ Current brute-force example targets RFC1035-compatible label characters: lowerca
 
 ## Scheduling modes
 
-- **`sequential`**: run arms in config order until exhaustion, then move to the next.
+- **`sequential`**: divide `total_slices` into a fixed per-arm budget, then run each arm consecutively in config order.
+  - Budgeting rule: `total_slices // enabled_arms` per arm, with any remainder distributed in config order.
+  - If an arm exhausts early, its remaining assigned slices are skipped (not redistributed).
 - **`round_robin`**: rotate across non-exhausted arms.
 - **`adaptive`**: warm-up + nonstationary bandit-style score tracking.
 

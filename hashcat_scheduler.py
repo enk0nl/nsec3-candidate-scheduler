@@ -223,12 +223,18 @@ def choose_next_arm(
     warmup_remaining: List[str],
     epsilon: float,
     rng: random.Random,
+    sequential_remaining: Optional[Dict[str, int]] = None,
 ) -> Tuple[Optional[ArmState], str]:
     live = [a for a in states if not a.exhausted]
     if not live:
         return None, "none"
     if schedule == "sequential":
-        return sorted(live, key=lambda a: states.index(a))[0], "sequential"
+        if not sequential_remaining:
+            return None, "none"
+        for a in states:
+            if sequential_remaining.get(a.name, 0) > 0:
+                return a, "sequential_budget"
+        return None, "none"
     if schedule == "round_robin":
         return sorted(live, key=lambda a: (a.jobs_run, states.index(a)))[0], "round_robin"
     # adaptive
@@ -308,6 +314,21 @@ def main() -> int:
             return 2
 
     warmup = [a.name for a in states if not a.exhausted]
+    sequential_allocations: Dict[str, int] = {}
+    sequential_remaining: Dict[str, int] = {}
+    sequential_skipped_slices: Dict[str, int] = {}
+    if args.schedule == "sequential":
+        if not args.total_slices:
+            print("sequential schedule requires --total-slices", file=sys.stderr)
+            return 2
+        arm_count = len(states)
+        base = args.total_slices // arm_count
+        remainder = args.total_slices % arm_count
+        for idx, arm in enumerate(states):
+            allocation = base + (1 if idx < remainder else 0)
+            sequential_allocations[arm.name] = allocation
+            sequential_remaining[arm.name] = allocation
+            sequential_skipped_slices[arm.name] = 0
 
     start_ts = time.time()
     start_iso = utc_now()
@@ -323,7 +344,12 @@ def main() -> int:
             break
 
         arm, selection_reason = choose_next_arm(
-            states, args.schedule, warmup if args.schedule == "adaptive" else [], epsilon, rng
+            states,
+            args.schedule,
+            warmup if args.schedule == "adaptive" else [],
+            epsilon,
+            rng,
+            sequential_remaining if args.schedule == "sequential" else None,
         )
         if arm is None:
             break
@@ -334,6 +360,9 @@ def main() -> int:
             remain = arm.keyspace - arm.next_skip
             if remain <= 0:
                 arm.exhausted = True
+                if args.schedule == "sequential" and sequential_remaining.get(arm.name, 0) > 0:
+                    sequential_skipped_slices[arm.name] += sequential_remaining[arm.name]
+                    sequential_remaining[arm.name] = 0
                 continue
             limit = min(limit, remain)
 
@@ -452,6 +481,12 @@ def main() -> int:
         arm.jobs_run += 1
         arm.runtime += runtime_seconds
         arm.total_new_cracks += marginal_new_cracks
+        if args.schedule == "sequential":
+            if sequential_remaining.get(arm.name, 0) > 0:
+                sequential_remaining[arm.name] -= 1
+            if arm.exhausted and sequential_remaining.get(arm.name, 0) > 0:
+                sequential_skipped_slices[arm.name] += sequential_remaining[arm.name]
+                sequential_remaining[arm.name] = 0
 
         job_id += 1
         exit_meaning = EXIT_MEANINGS.get(rc, "error")
@@ -551,6 +586,8 @@ def main() -> int:
         "hashcat_logs_dir": hashcat_logs_dir,
         "potfile_path": potfile,
         "total_hashcat_status_events": total_hashcat_status_events,
+        "sequential_allocations": sequential_allocations if args.schedule == "sequential" else None,
+        "sequential_skipped_slices": sequential_skipped_slices if args.schedule == "sequential" else None,
         "arms": {
             a.name: {
                 "score": a.score,
