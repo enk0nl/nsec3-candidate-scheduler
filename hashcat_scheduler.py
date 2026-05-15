@@ -92,33 +92,36 @@ def parse_hashcat_outfile(path: str) -> Dict[str, str]:
     return out
 
 
-def run_cmd(cmd: List[str], stdin_text: Optional[str] = None) -> Tuple[int, str]:
+def run_cmd(cmd: List[str], stdin_text: Optional[str] = None) -> Tuple[int, str, str]:
     p = subprocess.run(
         cmd,
         input=stdin_text,
         text=True,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         check=False,
     )
-    return p.returncode, p.stdout
+    return p.returncode, p.stdout, p.stderr
 
 
 def compute_bruteforce_keyspace(hash_mode: int, hashes: str, arm: ArmState) -> int:
-    cmd = ["hashcat", "-m", str(hash_mode), "-a", "3", hashes, arm.config["mask"], "--keyspace"]
+    cmd = ["hashcat", "--keyspace", "-m", str(hash_mode), "-a", "3"]
     charset_keys = [("custom_charset1", "custom_charset_1"), ("custom_charset2", "custom_charset_2"), ("custom_charset3", "custom_charset_3"), ("custom_charset4", "custom_charset_4")]
     for legacy_key, underscored_key in charset_keys:
         cs_value = arm.config.get(underscored_key, arm.config.get(legacy_key))
         if cs_value is not None:
             idx = underscored_key[-1]
             cmd.extend([f"-{idx}", str(cs_value)])
-    rc, out = run_cmd(cmd)
+    cmd.extend([hashes, arm.config["mask"]])
+    rc, out, err = run_cmd(cmd)
     if rc != 0:
-        raise RuntimeError(f"hashcat --keyspace failed for {arm.name}: rc={rc}, out={out[:400]}")
+        raise RuntimeError(
+            f"hashcat --keyspace failed for {arm.name}: rc={rc}, cmd={' '.join(cmd)}, stdout={out[:400]}, stderr={err[:400]}"
+        )
     for tok in out.split():
         if tok.isdigit():
             return int(tok)
-    raise RuntimeError(f"unable to parse keyspace for {arm.name}: {out[:400]}")
+    raise RuntimeError(f"unable to parse keyspace for {arm.name}: stdout={out[:400]}, stderr={err[:400]}")
 
 
 def choose_next_arm(
@@ -268,7 +271,7 @@ def main() -> int:
 
         score_before = arm.score
         t0 = time.time()
-        rc, out = run_cmd(cmd)
+        rc, out, err = run_cmd(cmd)
         runtime_seconds = max(0.0, time.time() - t0)
         status = parse_status_json(out)
 
@@ -354,7 +357,7 @@ def main() -> int:
         )
 
         if rc not in (0, 1, 4):
-            print(f"warning: arm={arm.name} rc={rc}, continuing", file=sys.stderr)
+            print(f"warning: arm={arm.name} rc={rc}, stdout={out[:400]}, stderr={err[:400]}, continuing", file=sys.stderr)
 
         if all(a.exhausted for a in states):
             break
