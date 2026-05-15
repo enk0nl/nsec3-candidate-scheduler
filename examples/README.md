@@ -38,6 +38,7 @@ This directory contains a minimal reproducible experiment config for `hashcat_sc
 - `hashcat.out` is not created by default; the potfile is the canonical cracked-output store.
 - `jobs.jsonl` stores parsed hashcat status/statistics fields for downstream plotting.
 - `--verbose` adds scheduler-level detail (command + parsed status summary) without live streaming raw hashcat output.
+- By default, hashcat uses normal kernel selection; set `"pure_kernels": true` in config or pass `--pure-kernels` to use `--optimized-kernel-disable` for cracking jobs.
 - Brute-force masks use hashcat keyspace tracking (`--keyspace`) with skip/limit progression.
 - Dictionary attacks (including pre-generated PCFG files) use line-based skip/limit tracking.
 

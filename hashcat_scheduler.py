@@ -171,6 +171,7 @@ def main() -> int:
     ap.add_argument("--random-seed", type=int)
     ap.add_argument("--default-limit", type=int, default=1000000)
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--pure-kernels", action="store_true")
     args = ap.parse_args()
 
     if not args.total_slices and not args.total_seconds:
@@ -197,6 +198,7 @@ def main() -> int:
     epsilon = args.epsilon if args.epsilon is not None else float(cfg.get("epsilon", 0.1))
     random_seed = args.random_seed if args.random_seed is not None else int(cfg.get("random_seed", 0))
     randomize_warmup = bool(cfg.get("randomize_warmup", False)) or args.warmup_randomize
+    pure_kernels = args.pure_kernels or bool(cfg.get("pure_kernels", False))
     rng = random.Random(random_seed)
 
     # Scheduler-level arm selection decisions are reproducible with the same seed and inputs.
@@ -257,6 +259,7 @@ def main() -> int:
             "--runtime", str(args.slice_seconds),
             "--status", "--status-json", "--status-timer", "5",
             "--potfile-path", potfile,
+            *(["--optimized-kernel-disable"] if pure_kernels else []),
             args.hashes,
         ]
 
@@ -352,6 +355,7 @@ def main() -> int:
             "selection_reason": selection_reason,
             "arm": arm.name,
             "attack_type": arm.arm_type,
+            "pure_kernels": pure_kernels,
             "hash_mode": args.hash_mode,
             "skip_before": skip_before,
             "limit": int(limit),
@@ -425,6 +429,7 @@ def main() -> int:
         "config": cfg,
         "random_seed": random_seed,
         "randomize_warmup": randomize_warmup,
+        "pure_kernels": pure_kernels,
         "start_timestamp": start_iso,
         "end_timestamp": end_iso,
         "total_runtime_seconds": total_runtime,

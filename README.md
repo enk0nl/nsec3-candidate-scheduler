@@ -87,6 +87,9 @@ Notes:
 - The run-local potfile (`run.pot`) is the canonical cracked-output store.
 - `jobs.jsonl` includes parsed hashcat status/statistics fields suitable for plotting and analysis.
 - `--verbose` prints command + extra parsed status detail per job, but does not stream full live hashcat output.
+- By default, hashcat uses its normal kernel selection behavior.
+- `--pure-kernels` passes `--optimized-kernel-disable` to cracking commands.
+- Pure kernels may reduce speed but avoid optimized-kernel constraints; use for correctness-sensitive comparisons or when hashcat reports optimized-kernel limitations.
 
 ## Important limitations
 
