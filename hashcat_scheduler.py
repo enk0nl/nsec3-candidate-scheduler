@@ -201,13 +201,14 @@ def merge_potfile_entries(dest_path: str, source_path: str) -> Tuple[int, int]:
 
 
 def compute_bruteforce_keyspace(arm: ArmState) -> int:
-    cmd = ["hashcat", "--keyspace", "-a", "3", arm.config["mask"]]
+    cmd = ["hashcat", "--keyspace", "-a", "3"]
     charset_keys = [("custom_charset1", "custom_charset_1"), ("custom_charset2", "custom_charset_2"), ("custom_charset3", "custom_charset_3"), ("custom_charset4", "custom_charset_4")]
     for legacy_key, underscored_key in charset_keys:
         cs_value = arm.config.get(underscored_key, arm.config.get(legacy_key))
         if cs_value is not None:
             idx = underscored_key[-1]
             cmd.extend([f"-{idx}", str(cs_value)])
+    cmd.append(arm.config["mask"])
     rc, out, err = run_cmd(cmd)
     if rc != 0:
         raise RuntimeError(f"hashcat --keyspace failed for {arm.name}: rc={rc}, out={out[:300]}, err={err[:300]}")
@@ -433,6 +434,8 @@ def main() -> int:
         parsed_progress_total = hashcat_fields["hashcat_progress_end"] if isinstance(hashcat_fields["hashcat_progress_end"], int) else None
 
         progress_source = "unknown"
+        brute_force_slice_end = None
+        scaled_position = None
         next_skip = arm.next_skip
         effective_limit = int(limit)
         if arm.arm_type == "dictionary":
@@ -444,18 +447,21 @@ def main() -> int:
                 next_skip = arm.next_skip + effective_limit
                 progress_source = "limit"
         elif arm.arm_type == "brute_force":
-            if isinstance(parsed_restore, int) and parsed_restore > 0:
-                next_skip = max(next_skip, parsed_restore)
+            if isinstance(parsed_restore, int) and parsed_restore > arm.next_skip:
+                next_skip = min(parsed_restore, arm.keyspace)
                 progress_source = "restore_point"
             elif (
                 isinstance(parsed_progress_cur, int) and parsed_progress_cur > 0
                 and isinstance(parsed_progress_total, int) and parsed_progress_total > 0
                 and isinstance(arm.keyspace, int) and arm.keyspace > 0
             ):
-                scaled_advance = math.floor((parsed_progress_cur / parsed_progress_total) * arm.keyspace)
-                advance = min(scaled_advance, effective_limit)
-                next_skip = min(arm.next_skip + advance, arm.keyspace)
-                progress_source = "progress_scaled_to_keyspace"
+                brute_force_slice_end = min(skip_before + effective_limit, arm.keyspace)
+                scaled_position = math.floor(
+                    (parsed_progress_cur / parsed_progress_total) * brute_force_slice_end
+                )
+                next_skip = max(skip_before, scaled_position)
+                next_skip = min(next_skip, arm.keyspace)
+                progress_source = "progress_scaled_to_slice_end"
             elif rc == 1:
                 next_skip = arm.next_skip + effective_limit
                 progress_source = "limit_fallback_exhausted"
@@ -514,6 +520,8 @@ def main() -> int:
             "parsed_progress_cur": parsed_progress_cur,
             "parsed_progress_total": parsed_progress_total,
             "parsed_restore_point": parsed_restore,
+            "brute_force_slice_end": brute_force_slice_end,
+            "scaled_position": scaled_position,
             "new_cracks": marginal_new_cracks,
             "arm_local_cracks": arm_local_cracks,
             "marginal_new_cracks": marginal_new_cracks,
@@ -557,7 +565,7 @@ def main() -> int:
         else:
             print("  phase: adaptive (score based on marginal new cracks)")
         print(f"  arm: {arm.name} ({arm.arm_type})")
-        print(f"  skip: {skip_before} -> {arm.next_skip} / keyspace={arm.keyspace if arm.keyspace is not None else 'unknown'}")
+        print(f"  skip: {skip_before} -> {arm.next_skip} / keyspace={arm.keyspace if arm.keyspace is not None else 'unknown'} source={progress_source}")
         print(f"  runtime: {runtime_seconds:.1f}s, exit={rc} {exit_meaning}")
         print(f"  cracks: arm_local={arm_local_cracks}, marginal_new={marginal_new_cracks}, total={total_cracks}, reward={reward:.3f}/s")
         print(f"  score: {score_before:.3f} -> {arm.score:.3f}")
