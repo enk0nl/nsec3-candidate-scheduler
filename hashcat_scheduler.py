@@ -41,6 +41,11 @@ class ArmState:
     jobs_run: int = 0
     runtime: float = 0.0
     total_new_cracks: int = 0
+    masks: List[str] = dataclasses.field(default_factory=list)
+    current_mask_index: int = 0
+    mask_keyspaces: Dict[str, int] = dataclasses.field(default_factory=dict)
+    mask_next_skip: Dict[str, int] = dataclasses.field(default_factory=dict)
+    mask_exhausted: Dict[str, bool] = dataclasses.field(default_factory=dict)
 
 
 def utc_now() -> str:
@@ -200,15 +205,50 @@ def merge_potfile_entries(dest_path: str, source_path: str) -> Tuple[int, int]:
     return len(source_entries), after - before
 
 
-def compute_bruteforce_keyspace(arm: ArmState) -> int:
-    cmd = ["hashcat", "--keyspace", "-a", "3"]
+def build_charset_args(arm: ArmState) -> List[str]:
+    args: List[str] = []
     charset_keys = [("custom_charset1", "custom_charset_1"), ("custom_charset2", "custom_charset_2"), ("custom_charset3", "custom_charset_3"), ("custom_charset4", "custom_charset_4")]
     for legacy_key, underscored_key in charset_keys:
         cs_value = arm.config.get(underscored_key, arm.config.get(legacy_key))
         if cs_value is not None:
             idx = underscored_key[-1]
-            cmd.extend([f"-{idx}", str(cs_value)])
-    cmd.append(arm.config["mask"])
+            args.extend([f"-{idx}", str(cs_value)])
+    return args
+
+
+def current_mask(arm: ArmState) -> Optional[str]:
+    if 0 <= arm.current_mask_index < len(arm.masks):
+        return arm.masks[arm.current_mask_index]
+    return None
+
+
+def current_mask_keyspace(arm: ArmState) -> Optional[int]:
+    mask = current_mask(arm)
+    return arm.mask_keyspaces.get(mask) if mask is not None else None
+
+
+def current_mask_next_skip(arm: ArmState) -> int:
+    mask = current_mask(arm)
+    return arm.mask_next_skip.get(mask, 0) if mask is not None else 0
+
+
+def advance_to_next_unexhausted_mask(arm: ArmState) -> bool:
+    for idx, mask in enumerate(arm.masks):
+        if not arm.mask_exhausted.get(mask, False):
+            arm.current_mask_index = idx
+            return True
+    arm.current_mask_index = len(arm.masks)
+    return False
+
+
+def brute_force_arm_exhausted(arm: ArmState) -> bool:
+    return all(arm.mask_exhausted.get(mask, False) for mask in arm.masks)
+
+
+def compute_bruteforce_keyspace(arm: ArmState, mask: str) -> int:
+    cmd = ["hashcat", "--keyspace", "-a", "3"]
+    cmd.extend(build_charset_args(arm))
+    cmd.append(mask)
     rc, out, err = run_cmd(cmd)
     if rc != 0:
         raise RuntimeError(f"hashcat --keyspace failed for {arm.name}: rc={rc}, out={out[:300]}, err={err[:300]}")
@@ -309,7 +349,28 @@ def main() -> int:
         if st.arm_type == "dictionary":
             st.keyspace = count_lines(st.config["wordlist"])
         elif st.arm_type == "brute_force":
-            st.keyspace = compute_bruteforce_keyspace(st)
+            has_mask = "mask" in st.config
+            has_masks = "masks" in st.config
+            if has_mask and has_masks:
+                print(f"brute_force arm {st.name} cannot define both mask and masks", file=sys.stderr)
+                return 2
+            if has_masks:
+                if not isinstance(st.config["masks"], list) or not st.config["masks"] or not all(isinstance(m, str) and m for m in st.config["masks"]):
+                    print(f"brute_force arm {st.name} masks must be a non-empty list of strings", file=sys.stderr)
+                    return 2
+                st.masks = list(st.config["masks"])
+            elif has_mask and isinstance(st.config["mask"], str) and st.config["mask"]:
+                st.masks = [st.config["mask"]]
+            else:
+                print(f"brute_force arm {st.name} must define mask or masks", file=sys.stderr)
+                return 2
+            for mask in st.masks:
+                ks = compute_bruteforce_keyspace(st, mask)
+                st.mask_keyspaces[mask] = ks
+                st.mask_next_skip[mask] = 0
+                st.mask_exhausted[mask] = False
+            advance_to_next_unexhausted_mask(st)
+            st.keyspace = sum(st.mask_keyspaces.values())
         else:
             print(f"unknown arm type in config: {st.arm_type}", file=sys.stderr)
             return 2
@@ -355,12 +416,22 @@ def main() -> int:
         if arm is None:
             break
 
-        skip_before = arm.next_skip
+        active_mask = current_mask(arm) if arm.arm_type == "brute_force" else None
+        if arm.arm_type == "brute_force" and active_mask is None:
+            arm.exhausted = True
+            continue
+        skip_before = current_mask_next_skip(arm) if arm.arm_type == "brute_force" else arm.next_skip
         limit = args.default_limit
-        if arm.keyspace is not None:
-            remain = arm.keyspace - arm.next_skip
+        keyspace_for_job = current_mask_keyspace(arm) if arm.arm_type == "brute_force" else arm.keyspace
+        if keyspace_for_job is not None:
+            remain = keyspace_for_job - skip_before
             if remain <= 0:
-                arm.exhausted = True
+                if arm.arm_type == "brute_force" and active_mask is not None:
+                    arm.mask_exhausted[active_mask] = True
+                    if not advance_to_next_unexhausted_mask(arm):
+                        arm.exhausted = True
+                else:
+                    arm.exhausted = True
                 if args.schedule == "sequential" and sequential_remaining.get(arm.name, 0) > 0:
                     sequential_skipped_slices[arm.name] += sequential_remaining[arm.name]
                     sequential_remaining[arm.name] = 0
@@ -388,14 +459,9 @@ def main() -> int:
         if arm.arm_type == "dictionary":
             cmd.extend(["--skip", str(arm.next_skip), "--limit", str(limit), arm.config["wordlist"]])
         elif arm.arm_type == "brute_force":
-            cmd.extend(["--skip", str(arm.next_skip), "--limit", str(limit)])
-            charset_keys = [("custom_charset1", "custom_charset_1"), ("custom_charset2", "custom_charset_2"), ("custom_charset3", "custom_charset_3"), ("custom_charset4", "custom_charset_4")]
-            for legacy_key, underscored_key in charset_keys:
-                cs_value = arm.config.get(underscored_key, arm.config.get(legacy_key))
-                if cs_value is not None:
-                    idx = underscored_key[-1]
-                    cmd.extend([f"-{idx}", str(cs_value)])
-            cmd.append(arm.config["mask"])
+            cmd.extend(["--skip", str(skip_before), "--limit", str(limit)])
+            cmd.extend(build_charset_args(arm))
+            cmd.append(active_mask)
         else:
             print(f"unknown arm type: {arm.arm_type}", file=sys.stderr)
             arm.exhausted = True
@@ -447,24 +513,24 @@ def main() -> int:
                 next_skip = arm.next_skip + effective_limit
                 progress_source = "limit"
         elif arm.arm_type == "brute_force":
-            if isinstance(parsed_restore, int) and parsed_restore > arm.next_skip:
-                next_skip = min(parsed_restore, arm.keyspace)
+            if isinstance(parsed_restore, int) and parsed_restore > skip_before:
+                next_skip = min(parsed_restore, keyspace_for_job)
                 progress_source = "restore_point"
             elif (
                 isinstance(parsed_progress_cur, int) and parsed_progress_cur > 0
                 and isinstance(parsed_progress_total, int) and parsed_progress_total > 0
-                and isinstance(arm.keyspace, int) and arm.keyspace > 0
+                and isinstance(keyspace_for_job, int) and keyspace_for_job > 0
             ):
-                brute_force_slice_end = min(skip_before + effective_limit, arm.keyspace)
+                brute_force_slice_end = min(skip_before + effective_limit, keyspace_for_job)
                 scaled_position = math.floor(
                     (parsed_progress_cur / parsed_progress_total) * brute_force_slice_end
                 )
                 next_skip = max(skip_before, scaled_position)
-                next_skip = min(next_skip, arm.keyspace)
+                next_skip = min(next_skip, keyspace_for_job)
                 progress_source = "progress_scaled_to_slice_end"
             elif rc == 1:
-                next_skip = arm.next_skip + effective_limit
-                progress_source = "limit_fallback_exhausted"
+                next_skip = min(skip_before + effective_limit, keyspace_for_job)
+                progress_source = "limit_fallback"
             else:
                 progress_source = "unknown"
         else:
@@ -472,11 +538,21 @@ def main() -> int:
                 next_skip = max(next_skip, parsed_restore)
                 progress_source = "restore_point"
 
-        arm.next_skip = next_skip
-        if arm.keyspace is not None and arm.next_skip >= arm.keyspace:
-            arm.exhausted = True
-        if rc == 1:
-            arm.exhausted = True
+        if arm.arm_type == "brute_force" and active_mask is not None:
+            arm.mask_next_skip[active_mask] = next_skip
+            if keyspace_for_job is not None and next_skip >= keyspace_for_job:
+                arm.mask_exhausted[active_mask] = True
+            if rc == 1:
+                arm.mask_exhausted[active_mask] = True
+            if arm.mask_exhausted[active_mask]:
+                advance_to_next_unexhausted_mask(arm)
+            arm.exhausted = brute_force_arm_exhausted(arm)
+        else:
+            arm.next_skip = next_skip
+            if arm.keyspace is not None and arm.next_skip >= arm.keyspace:
+                arm.exhausted = True
+            if rc == 1:
+                arm.exhausted = True
 
         if is_adaptive_warmup:
             reward_used_for_score = (arm_local_cracks / runtime_seconds) if runtime_seconds > 0 else 0.0
@@ -511,8 +587,8 @@ def main() -> int:
             "skip_before": skip_before,
             "limit": int(limit),
             "effective_limit": effective_limit,
-            "next_skip_after": arm.next_skip,
-            "keyspace": arm.keyspace,
+            "next_skip_after": arm.mask_next_skip.get(active_mask) if arm.arm_type == "brute_force" else arm.next_skip,
+            "keyspace": keyspace_for_job,
             "runtime_seconds": runtime_seconds,
             "exit_code": rc,
             "exit_meaning": exit_meaning,
@@ -532,6 +608,16 @@ def main() -> int:
             "score_after": arm.score,
             "exhausted": arm.exhausted,
         }
+        if arm.arm_type == "brute_force" and active_mask is not None:
+            rec.update({
+                "brute_force_mask": active_mask,
+                "brute_force_mask_index": arm.masks.index(active_mask),
+                "brute_force_masks_total": len(arm.masks),
+                "brute_force_mask_keyspace": keyspace_for_job,
+                "brute_force_mask_skip_before": skip_before,
+                "brute_force_mask_next_skip_after": arm.mask_next_skip.get(active_mask),
+                "brute_force_mask_exhausted": arm.mask_exhausted.get(active_mask, False),
+            })
         rec.update(hashcat_fields)
         with open(jobs_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
@@ -565,7 +651,11 @@ def main() -> int:
         else:
             print("  phase: adaptive (score based on marginal new cracks)")
         print(f"  arm: {arm.name} ({arm.arm_type})")
-        print(f"  skip: {skip_before} -> {arm.next_skip} / keyspace={arm.keyspace if arm.keyspace is not None else 'unknown'} source={progress_source}")
+        if arm.arm_type == "brute_force" and active_mask is not None:
+            print(f"  mask: {active_mask} index={arm.masks.index(active_mask)+1}/{len(arm.masks)}")
+            print(f"  skip: {skip_before} -> {arm.mask_next_skip.get(active_mask)} / keyspace={keyspace_for_job if keyspace_for_job is not None else 'unknown'} source={progress_source}")
+        else:
+            print(f"  skip: {skip_before} -> {arm.next_skip} / keyspace={arm.keyspace if arm.keyspace is not None else 'unknown'} source={progress_source}")
         print(f"  runtime: {runtime_seconds:.1f}s, exit={rc} {exit_meaning}")
         print(f"  cracks: arm_local={arm_local_cracks}, marginal_new={marginal_new_cracks}, total={total_cracks}, reward={reward:.3f}/s")
         print(f"  score: {score_before:.3f} -> {arm.score:.3f}")
@@ -606,6 +696,11 @@ def main() -> int:
                 "exhausted": a.exhausted,
                 "total_new_cracks": a.total_new_cracks,
                 "speed_hps_estimate": (a.total_new_cracks / a.runtime) if a.runtime > 0 else None,
+                "current_mask_index": a.current_mask_index if a.arm_type == "brute_force" else None,
+                "masks": [
+                    {"mask": m, "keyspace": a.mask_keyspaces.get(m), "next_skip": a.mask_next_skip.get(m), "exhausted": a.mask_exhausted.get(m)}
+                    for m in a.masks
+                ] if a.arm_type == "brute_force" else None,
             }
             for a in states
         },

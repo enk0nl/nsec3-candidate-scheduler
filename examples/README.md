@@ -13,10 +13,13 @@ This directory contains a minimal reproducible experiment config for `hashcat_sc
 2. **Pre-generated PCFG wordlist** (`pcfg-100m`)
    - Type: `dictionary`
    - PCFG guesses are generated ahead of time and treated exactly like a normal wordlist.
-3. **Brute-force RFC1035-style label charset length 6** (`alnum-hyphen-len6`)
+3. **Brute-force RFC1035-style label charset lengths 3-5** (`bf-rfc1035-len3-5`)
    - Type: `brute_force`
    - Targets RFC1035-compatible label characters: lowercase letters, digits, and hyphen (`-`).
-   - Charset: `abcdefghijklmnopqrstuvwxyz0123456789-` via `custom_charset_1` and mask `?1?1?1?1?1?1`.
+   - Charset: `abcdefghijklmnopqrstuvwxyz0123456789-` via `custom_charset_1`.
+   - Uses ordered explicit masks: `?1?1?1`, `?1?1?1?1`, `?1?1?1?1?1`.
+   - Brute-force arms can define either `mask` (single) or `masks` (non-empty list), and each mask tracks independent keyspace/skip/exhausted state.
+   - This replaces `--increment` so chunking/resume state is explicit and auditable, which is useful for short DNS labels (e.g., `www`).
 
 ## Runtime, scheduling, and reproducibility
 
