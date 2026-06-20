@@ -1,0 +1,12 @@
+{
+  "random_seed": 1337,
+  "alpha": 0.15,
+  "epsilon": 0.15,
+  "arms": [
+    {"name": "seclists", "type": "dictionary", "source": "seclists", "wordlist": "/usr/src/pcfg-dnsresearch-helper-scripts/cleaned_seclists_labels.txt"},
+    {"name": "rfc1035_pcfg_top8843709.txt", "type": "dictionary", "source": "pcfg", "wordlist": "/usr/src/dutch-dns-wordlists/rfc1035_pcfg_top8843709.txt"},
+    {"name": "alnum-hyphen-len2-5", "type": "brute_force", "custom_charset_1": "abcdefghijklmnopqrstuvwxyz0123456789-", "masks": ["?1?1", "?1?1?1", "?1?1?1?1", "?1?1?1?1?1"]},
+    {"name": "predictive-prefix", "type": "predictive_prefix", "enabled": true, "model": "models/prefix_pairs.tsv", "base_mode": "full", "prediction_source": "leftmost", "max_predictions": 100, "min_sim": 0.7, "tau": 2.0, "gamma": 0.0, "score_floor": -5.0, "k_neighbors": 30, "top_predictions_per_neighbor": 100, "force_every_slices": 10},
+    {"name": "predictive-suffix", "type": "predictive_suffix", "enabled": true, "model": "models/suffix_pairs.tsv", "base_mode": "full", "prediction_source": "leftmost", "max_predictions": 100, "min_sim": 0.7, "tau": 2.0, "gamma": 0.0, "score_floor": -5.0, "k_neighbors": 30, "top_predictions_per_neighbor": 100, "force_every_slices": 10}
+  ]
+}
