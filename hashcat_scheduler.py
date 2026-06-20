@@ -470,6 +470,11 @@ def main() -> int:
     alpha = args.alpha if args.alpha is not None else float(cfg.get("alpha", 0.2))
     epsilon = args.epsilon if args.epsilon is not None else float(cfg.get("epsilon", 0.1))
     random_seed = args.random_seed if args.random_seed is not None else int(cfg.get("random_seed", 0))
+    dictionary_candidate_limit_raw = cfg.get("dictionary_candidate_limit", False)
+    if not isinstance(dictionary_candidate_limit_raw, bool):
+        print("dictionary_candidate_limit must be a boolean when provided", file=sys.stderr)
+        return 2
+    dictionary_candidate_limit = dictionary_candidate_limit_raw
     rng = random.Random(random_seed)
 
     # Scheduler-level arm selection decisions are reproducible with the same seed and inputs.
@@ -629,7 +634,10 @@ def main() -> int:
         ]
 
         if arm.arm_type == "dictionary":
-            cmd.extend(["--skip", str(arm.next_skip), "--limit", str(limit), arm.config["wordlist"]])
+            cmd.extend(["--skip", str(arm.next_skip)])
+            if dictionary_candidate_limit:
+                cmd.extend(["--limit", str(limit)])
+            cmd.append(arm.config["wordlist"])
         elif arm.arm_type == "feedback":
             if feedback_slice_candidates is None:
                 print(f"feedback arm {arm.name} has no slice candidate file", file=sys.stderr)
@@ -678,22 +686,35 @@ def main() -> int:
         parsed_restore = hashcat_fields["hashcat_restore_point"]
         parsed_progress_cur = hashcat_fields["hashcat_progress_cur"] if isinstance(hashcat_fields["hashcat_progress_cur"], int) else None
         parsed_progress_total = hashcat_fields["hashcat_progress_end"] if isinstance(hashcat_fields["hashcat_progress_end"], int) else None
+        parsed_recovered_salts_total = hashcat_fields["hashcat_recovered_salts_total"] if isinstance(hashcat_fields["hashcat_recovered_salts_total"], int) else None
 
         progress_source = "unknown"
         brute_force_slice_end = None
         scaled_position = None
+        dictionary_candidate_cursor = None
         next_skip = arm.next_skip
         effective_limit = int(limit)
         if arm.arm_type == "dictionary":
-            if isinstance(parsed_restore, int) and parsed_restore > skip_before:
-                next_skip = max(next_skip, parsed_restore)
+            if isinstance(parsed_progress_cur, int) and isinstance(parsed_recovered_salts_total, int) and parsed_recovered_salts_total > 0:
+                dictionary_candidate_cursor = math.floor(parsed_progress_cur / parsed_recovered_salts_total)
+            if isinstance(dictionary_candidate_cursor, int) and dictionary_candidate_cursor > skip_before:
+                next_skip = dictionary_candidate_cursor
+                if keyspace_for_job is not None:
+                    next_skip = min(next_skip, keyspace_for_job)
+                progress_source = "progress_scaled_by_salts"
+            elif isinstance(parsed_restore, int) and parsed_restore > skip_before:
+                next_skip = parsed_restore
+                if keyspace_for_job is not None:
+                    next_skip = min(next_skip, keyspace_for_job)
                 progress_source = "restore_point"
-            else:
-                # Conservative fallback: advance by planned limit if restore_point is missing or did not advance.
+            elif dictionary_candidate_limit:
                 next_skip = arm.next_skip + effective_limit
                 if keyspace_for_job is not None:
                     next_skip = min(next_skip, keyspace_for_job)
-                progress_source = "limit"
+                progress_source = "dictionary_candidate_limit"
+            else:
+                next_skip = skip_before
+                progress_source = "unknown"
         elif arm.arm_type == "brute_force":
             if isinstance(parsed_restore, int) and parsed_restore > skip_before:
                 next_skip = min(parsed_restore, keyspace_for_job)
@@ -793,6 +814,9 @@ def main() -> int:
             "parsed_progress_cur": parsed_progress_cur,
             "parsed_progress_total": parsed_progress_total,
             "parsed_restore_point": parsed_restore,
+            "parsed_recovered_salts_total": parsed_recovered_salts_total,
+            "dictionary_candidate_cursor": dictionary_candidate_cursor,
+            "dictionary_candidate_limit_enabled": dictionary_candidate_limit,
             "brute_force_slice_end": brute_force_slice_end,
             "scaled_position": scaled_position,
             "new_cracks": marginal_new_cracks,
@@ -914,6 +938,7 @@ def main() -> int:
         "hashcat_logs_dir": hashcat_logs_dir,
         "potfile_path": potfile,
         "total_hashcat_status_events": total_hashcat_status_events,
+        "dictionary_candidate_limit_enabled": dictionary_candidate_limit,
         "sequential_allocations": sequential_allocations if args.schedule == "sequential" else None,
         "sequential_skipped_slices": sequential_skipped_slices if args.schedule == "sequential" else None,
         "arms": {

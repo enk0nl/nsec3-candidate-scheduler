@@ -107,5 +107,6 @@ Use `--verbose` to print extra scheduler details (command + parsed status summar
 
 - PCFG is handled as a static pre-generated wordlist, not as an online generator.
 - Runtime-limited cracking is not perfectly deterministic.
+- Dictionary cursor advancement uses hashcat status JSON progress scaled by recovered salts; if status progress does not advance, the dictionary cursor is left unchanged unless `dictionary_candidate_limit` is explicitly enabled in config as chunked mode.
 - Dictionary/brute-force offset advancement can be approximate when hashcat progress fields are incomplete.
 - The scheduler is intentionally minimal and experimental.
