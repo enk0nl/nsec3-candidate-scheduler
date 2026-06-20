@@ -11,7 +11,11 @@ A lightweight experimental scheduler for comparative hash cracking experiments u
 - Per-slice JSONL metrics logging
 - Per-job raw hashcat logs (`stdout`/`stderr`) in `hashcat_logs/`
 - Brute-force keyspace tracking (`hashcat --keyspace`)
-- Dictionary line-based skip/limit tracking
+- Dictionary cursor tracking from hashcat status JSON for NSEC3-style salted cracking
+
+## Simplified experiment model
+
+This scheduler is currently tuned for hashcat mode 8300 / NSEC3-style salted cracking. Arms are explicit dictionary, brute-force mask, or one optional queue-driven feedback arm. Rewards remain `new discoveries / actual runtime`, with adaptive scores updated by alpha/epsilon bandit logic. Dictionary cursor tracking uses hashcat status JSON progress divided by `recovered_salts_total`; if that progress cannot be parsed, the dictionary cursor is not advanced. Feedback state lives in the four feedback files listed below: discoveries expand each base once, enqueue unseen `<base>.<common>` and `<common>.<base>` candidates, and drain the queue into `feedback_slice_candidates.txt` when the feedback arm runs. Optional `force_every_slices` cadence applies only after adaptive warm-up and only to available arms. Known limitation: feedback slice candidate resume may not perfectly preserve partial progress within a drained feedback slice.
 
 ## Supported attack strategies
 
@@ -30,7 +34,7 @@ Multiple masks are attempted in config order with independent per-mask keyspace/
 
 ## Feedback arms
 
-A feedback arm is optional and is only registered when explicitly present in the config with `"type": "feedback"`. Set `"enabled": false` to leave it out of scheduling. At most one enabled feedback arm may be configured. `common_labels` is required and must be a non-empty list of strings; labels and discovered DNS names are normalized to lowercase, stripped of surrounding whitespace and trailing dots, and rejected if empty or if they contain empty dot components. Underscore labels are preserved.
+A feedback arm is optional and is only registered when explicitly present in the config with `"type": "feedback"`. Set `"enabled": false` to leave it out of scheduling. At most one enabled feedback arm may be configured. `common_labels` is required and must be a non-empty list of strings. Feedback bases and common labels are normalized to lowercase and stripped of surrounding whitespace; single labels, multi-label names, underscores, hyphens, and digits are allowed. Empty names, leading/trailing dots, empty dot components, embedded whitespace, labels longer than 63 characters, and names longer than 253 characters are rejected.
 
 After each slice, newly cracked names are expanded into both `<discovered>.<common>` and `<common>.<discovered>` candidates, deduplicated through persistent feedback state files in the run output directory, and appended to `feedback_queue.txt`. The feedback arm is eligible only while that queue has items. When selected, the queue is written to `feedback_slice_candidates.txt`, drained, and run through hashcat as a dictionary slice using the same runtime limit and reward calculation as other arms.
 
@@ -95,7 +99,7 @@ python3 hashcat_scheduler.py \
 Each run writes to `--out-dir`:
 
 - `run.pot` (run-local potfile; canonical cracked-output store)
-- `hashcat_logs/job_XXXXXX.log` (raw hashcat command output and parsed status JSON objects)
+- `hashcat_logs/job_XXXXXX.log` (raw hashcat command output; parsed status JSON objects are included only with `--verbose-debug`)
 - `jobs.jsonl` (per-slice execution metrics)
 - `hits.jsonl` (newly cracked entries)
 - `run_summary.json` (final aggregate summary)
@@ -103,12 +107,12 @@ Each run writes to `--out-dir`:
 
 `jobs.jsonl` now includes parsed hashcat status fields (progress/speed/recovery/status/session/runtime estimates) when available, with `null` values when unavailable.
 
-Use `--verbose` to print extra scheduler details (command + parsed status summary) without streaming full live hashcat output.
+Use `--verbose` to print extra scheduler details without streaming full live hashcat output. Use `--verbose-debug` only when raw parsed status JSON dumps are needed.
 
 ## Important limitations
 
 - PCFG is handled as a static pre-generated wordlist, not as an online generator.
 - Runtime-limited cracking is not perfectly deterministic.
-- Dictionary cursor advancement uses hashcat status JSON progress scaled by recovered salts; if status progress does not advance, the dictionary cursor is left unchanged unless `dictionary_candidate_limit` is explicitly enabled in config as chunked mode.
+- Dictionary cursor advancement uses hashcat status JSON progress scaled by recovered salts; if status progress cannot be parsed, the dictionary cursor is left unchanged. Experimental dictionary chunking is available only when `dictionary_candidate_limit` is set to a positive integer in config; the default is `null`/absent and does not pass `--limit`.
 - Dictionary/brute-force offset advancement can be approximate when hashcat progress fields are incomplete.
 - The scheduler is intentionally minimal and experimental.

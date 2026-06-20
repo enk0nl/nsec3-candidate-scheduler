@@ -88,20 +88,16 @@ def parse_hashcat_status_lines(output_text: str) -> List[Dict[str, Any]]:
 def parse_hashcat_summary_fields(status: Dict[str, Any]) -> Dict[str, Any]:
     progress_cur = None
     progress_end = None
-    progress_percent = None
     progress_val = status.get("progress")
     if isinstance(progress_val, list) and len(progress_val) >= 2:
         progress_cur, progress_end = progress_val[0], progress_val[1]
     elif isinstance(progress_val, int):
         progress_cur = progress_val
-    if isinstance(progress_cur, int) and isinstance(progress_end, int) and progress_end > 0:
-        progress_percent = (progress_cur / progress_end) * 100.0
 
     restore_cur = None
-    restore_total = None
     restore_val = status.get("restore_point")
-    if isinstance(restore_val, list) and len(restore_val) >= 2:
-        restore_cur, restore_total = restore_val[0], restore_val[1]
+    if isinstance(restore_val, list) and restore_val:
+        restore_cur = restore_val[0]
     elif isinstance(restore_val, int):
         restore_cur = restore_val
 
@@ -112,30 +108,18 @@ def parse_hashcat_summary_fields(status: Dict[str, Any]) -> Dict[str, Any]:
     elif not isinstance(speed_raw, (int, float)):
         speed_hps = None
 
+    recovered_hashes = status.get("recovered_hashes")
+    recovered_salts = status.get("recovered_salts")
     return {
         "hashcat_status": status.get("status"),
-        "hashcat_status_text": status.get("status_text"),
-        "hashcat_session": status.get("session"),
-        "hashcat_guess_base": status.get("guess_base"),
-        "hashcat_guess_base_count": status.get("guess_base_count"),
-        "hashcat_guess_base_offset": status.get("guess_base_offset"),
-        "hashcat_guess_mask_length": status.get("guess_mask_length"),
         "hashcat_progress_cur": progress_cur,
         "hashcat_progress_end": progress_end,
-        "hashcat_progress_percent": progress_percent,
         "hashcat_restore_point": restore_cur,
-        "hashcat_restore_total": restore_total,
-        "hashcat_speed_raw": speed_raw,
         "hashcat_speed_hps": speed_hps,
-        "hashcat_recovered_hashes_cur": status.get("recovered_hashes", [None, None])[0] if isinstance(status.get("recovered_hashes"), list) and status.get("recovered_hashes") else None,
-        "hashcat_recovered_hashes_total": status.get("recovered_hashes", [None, None])[1] if isinstance(status.get("recovered_hashes"), list) and len(status.get("recovered_hashes")) > 1 else None,
-        "hashcat_recovered_salts_cur": status.get("recovered_salts", [None, None])[0] if isinstance(status.get("recovered_salts"), list) and status.get("recovered_salts") else None,
-        "hashcat_recovered_salts_total": status.get("recovered_salts", [None, None])[1] if isinstance(status.get("recovered_salts"), list) and len(status.get("recovered_salts")) > 1 else None,
-        "hashcat_devices": status.get("devices"),
-        "hashcat_runtime_start": status.get("time_start"),
-        "hashcat_runtime_estimated_stop": status.get("estimated_stop"),
+        "hashcat_recovered_hashes_cur": recovered_hashes[0] if isinstance(recovered_hashes, list) and recovered_hashes else None,
+        "hashcat_recovered_hashes_total": recovered_hashes[1] if isinstance(recovered_hashes, list) and len(recovered_hashes) > 1 else None,
+        "hashcat_recovered_salts_total": recovered_salts[1] if isinstance(recovered_salts, list) and len(recovered_salts) > 1 else None,
     }
-
 
 def format_speed_hps(speed_hps: Any) -> str:
     if not isinstance(speed_hps, (int, float)):
@@ -160,22 +144,6 @@ def run_cmd(cmd: List[str], stdin_text: Optional[str] = None) -> Tuple[int, str,
         check=False,
     )
     return p.returncode, p.stdout, p.stderr
-
-
-def parse_status_json(output: str) -> Dict[str, Any]:
-    last: Dict[str, Any] = {}
-    for line in output.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith("{") and line.endswith("}"):
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(obj, dict) and "status" in obj:
-                last = obj
-    return last
 
 
 def parse_hashcat_outfile(path: str) -> Dict[str, str]:
@@ -210,14 +178,17 @@ def merge_potfile_entries(dest_path: str, source_path: str) -> Tuple[int, int]:
 def normalize_dns_name(value: Any) -> Optional[str]:
     if not isinstance(value, str):
         return None
-    normalized = value.strip().lower().rstrip(".")
-    if not normalized:
+    normalized = value.strip().lower()
+    if not normalized or normalized.startswith(".") or normalized.endswith("."):
+        return None
+    if any(ch.isspace() for ch in normalized):
+        return None
+    if len(normalized) > 253:
         return None
     parts = normalized.split(".")
-    if any(part == "" for part in parts):
+    if any(part == "" or len(part) > 63 for part in parts):
         return None
     return normalized
-
 
 def load_set(path: str) -> set[str]:
     if not os.path.exists(path):
@@ -283,18 +254,14 @@ def expand_feedback_from_discoveries(new_discoveries: Iterable[str], feedback_co
     expanded = load_set(paths["expanded"])
     bases_to_append: List[str] = []
     candidates_to_append: List[str] = []
-    rejected_bases: List[str] = []
+    rejected_bases = 0
     generated = 0
     duplicates = 0
     bases_expanded = 0
     for raw in new_discoveries:
-        raw_text = str(raw)
         base = normalize_dns_name(raw)
-        if base is None:
-            rejected_bases.append(raw_text)
-            continue
-        if base in expanded:
-            rejected_bases.append(raw_text)
+        if base is None or base in expanded:
+            rejected_bases += 1
             continue
         bases_expanded += 1
         bases_to_append.append(base)
@@ -314,8 +281,7 @@ def expand_feedback_from_discoveries(new_discoveries: Iterable[str], feedback_co
         "feedback_bases_expanded": bases_expanded,
         "feedback_generated_candidates": generated,
         "feedback_duplicates_skipped": duplicates,
-        "feedback_rejected_bases": len(rejected_bases),
-        "feedback_rejected_bases_sample": rejected_bases[:10],
+        "feedback_rejected_bases": rejected_bases,
         "feedback_queue_size_before": queue_before,
         "feedback_candidates_enqueued": len(candidates_to_append),
         "feedback_queue_size_after": queue_before + len(candidates_to_append),
@@ -466,6 +432,7 @@ def main() -> int:
     ap.add_argument("--random-seed", type=int)
     ap.add_argument("--default-limit", type=int, default=1000000)
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--verbose-debug", action="store_true", help="print raw hashcat status JSON and per-slice debug samples")
     args = ap.parse_args()
 
     if not args.total_slices and not args.total_seconds:
@@ -493,11 +460,10 @@ def main() -> int:
     alpha = args.alpha if args.alpha is not None else float(cfg.get("alpha", 0.2))
     epsilon = args.epsilon if args.epsilon is not None else float(cfg.get("epsilon", 0.1))
     random_seed = args.random_seed if args.random_seed is not None else int(cfg.get("random_seed", 0))
-    dictionary_candidate_limit_raw = cfg.get("dictionary_candidate_limit", False)
-    if not isinstance(dictionary_candidate_limit_raw, bool):
-        print("dictionary_candidate_limit must be a boolean when provided", file=sys.stderr)
+    dictionary_candidate_limit = cfg.get("dictionary_candidate_limit")
+    if dictionary_candidate_limit is not None and (isinstance(dictionary_candidate_limit, bool) or not isinstance(dictionary_candidate_limit, int) or dictionary_candidate_limit <= 0):
+        print("dictionary_candidate_limit must be a positive integer or null when provided", file=sys.stderr)
         return 2
-    dictionary_candidate_limit = dictionary_candidate_limit_raw
     rng = random.Random(random_seed)
 
     # Scheduler-level arm selection decisions are reproducible with the same seed and inputs.
@@ -669,8 +635,8 @@ def main() -> int:
 
         if arm.arm_type == "dictionary":
             cmd.extend(["--skip", str(arm.next_skip)])
-            if dictionary_candidate_limit:
-                cmd.extend(["--limit", str(limit)])
+            if dictionary_candidate_limit is not None:
+                cmd.extend(["--limit", str(dictionary_candidate_limit)])
             cmd.append(arm.config["wordlist"])
         elif arm.arm_type == "feedback":
             if feedback_slice_candidates is None:
@@ -723,8 +689,6 @@ def main() -> int:
         parsed_recovered_salts_total = hashcat_fields["hashcat_recovered_salts_total"] if isinstance(hashcat_fields["hashcat_recovered_salts_total"], int) else None
 
         progress_source = "unknown"
-        brute_force_slice_end = None
-        scaled_position = None
         dictionary_candidate_cursor = None
         next_skip = arm.next_skip
         effective_limit = int(limit)
@@ -736,16 +700,6 @@ def main() -> int:
                 if keyspace_for_job is not None:
                     next_skip = min(next_skip, keyspace_for_job)
                 progress_source = "progress_scaled_by_salts"
-            elif isinstance(parsed_restore, int) and parsed_restore > skip_before:
-                next_skip = parsed_restore
-                if keyspace_for_job is not None:
-                    next_skip = min(next_skip, keyspace_for_job)
-                progress_source = "restore_point"
-            elif dictionary_candidate_limit:
-                next_skip = arm.next_skip + effective_limit
-                if keyspace_for_job is not None:
-                    next_skip = min(next_skip, keyspace_for_job)
-                progress_source = "dictionary_candidate_limit"
             else:
                 next_skip = skip_before
                 progress_source = "unknown"
@@ -758,11 +712,11 @@ def main() -> int:
                 and isinstance(parsed_progress_total, int) and parsed_progress_total > 0
                 and isinstance(keyspace_for_job, int) and keyspace_for_job > 0
             ):
-                brute_force_slice_end = min(skip_before + effective_limit, keyspace_for_job)
-                scaled_position = math.floor(
-                    (parsed_progress_cur / parsed_progress_total) * brute_force_slice_end
+                brute_force_progress_end = min(skip_before + effective_limit, keyspace_for_job)
+                brute_force_progress_position = math.floor(
+                    (parsed_progress_cur / parsed_progress_total) * brute_force_progress_end
                 )
-                next_skip = max(skip_before, scaled_position)
+                next_skip = max(skip_before, brute_force_progress_position)
                 next_skip = min(next_skip, keyspace_for_job)
                 progress_source = "progress_scaled_to_slice_end"
             elif rc == 1:
@@ -817,12 +771,10 @@ def main() -> int:
             "feedback_generated_candidates": 0,
             "feedback_duplicates_skipped": 0,
             "feedback_rejected_bases": 0,
-            "feedback_rejected_bases_sample": [],
             "feedback_queue_size_before": None,
             "feedback_candidates_enqueued": 0,
             "feedback_queue_size_after": None,
         }
-        sample_new_pairs = [{"hash": h, "value": v} for h, v in new_pairs[:10]]
         if feedback_config is not None and new_pairs:
             feedback_expansion = expand_feedback_from_discoveries((v for _, v in new_pairs), feedback_config, args.out_dir)
 
@@ -859,9 +811,7 @@ def main() -> int:
             "parsed_restore_point": parsed_restore,
             "parsed_recovered_salts_total": parsed_recovered_salts_total,
             "dictionary_candidate_cursor": dictionary_candidate_cursor,
-            "dictionary_candidate_limit_enabled": dictionary_candidate_limit,
-            "brute_force_slice_end": brute_force_slice_end,
-            "scaled_position": scaled_position,
+            "dictionary_candidate_limit": dictionary_candidate_limit,
             "new_cracks": marginal_new_cracks,
             "arm_local_cracks": arm_local_cracks,
             "marginal_new_cracks": marginal_new_cracks,
@@ -871,7 +821,6 @@ def main() -> int:
             "score_before": score_before,
             "score_after": arm.score,
             "exhausted": arm.exhausted,
-            "new_pairs_sample": sample_new_pairs,
             "feedback_slice_candidates": feedback_slice_candidates,
             "feedback_queue_size_before_slice": feedback_queue_size_before,
             "feedback_candidates_written_to_slice": feedback_candidates_written,
@@ -909,15 +858,14 @@ def main() -> int:
                 f.write(f"feedback_generated_candidates: {feedback_expansion['feedback_generated_candidates']}\n")
                 f.write(f"feedback_duplicates_skipped: {feedback_expansion['feedback_duplicates_skipped']}\n")
                 f.write(f"feedback_rejected_bases: {feedback_expansion['feedback_rejected_bases']}\n")
-                f.write(f"feedback_rejected_bases_sample: {json.dumps(feedback_expansion['feedback_rejected_bases_sample'])}\n")
-                f.write(f"new_pairs_sample: {json.dumps(sample_new_pairs)}\n")
             f.write("stdout:\n")
             f.write(stdout_text)
             f.write("\nstderr:\n")
             f.write(stderr_text)
-            f.write("\nparsed_status_json_objects:\n")
-            for obj in status_events:
-                f.write(json.dumps(obj, sort_keys=True) + "\n")
+            if args.verbose_debug:
+                f.write("\nparsed_status_json_objects:\n")
+                for obj in status_events:
+                    f.write(json.dumps(obj, sort_keys=True) + "\n")
 
         with open(hits_path, "a", encoding="utf-8") as f:
             for h, v in new_pairs:
@@ -925,7 +873,7 @@ def main() -> int:
 
         progress_cur = hashcat_fields["hashcat_progress_cur"] if hashcat_fields["hashcat_progress_cur"] is not None else "unknown"
         progress_end = hashcat_fields["hashcat_progress_end"] if hashcat_fields["hashcat_progress_end"] is not None else "unknown"
-        status_text = hashcat_fields["hashcat_status_text"] or hashcat_fields["hashcat_status"] or "unknown"
+        status_text = hashcat_fields["hashcat_status"] or "unknown"
         print(f"[job {job_id}] {args.schedule} / selected {selection_reason}")
         if forced_cadence_due:
             print(f"  forced cadence: interval={force_interval}, slices_since_last_run={slices_since_last_run}, overdue_ratio={overdue_ratio:.3f}")
@@ -957,12 +905,8 @@ def main() -> int:
         print(f"  hashcat: status={status_text}, progress={progress_cur}/{progress_end}, speed={format_speed_hps(hashcat_fields['hashcat_speed_hps'])}")
         if args.verbose:
             print(f"  hashcat status events parsed: {len(status_events)}")
-            if sample_new_pairs:
-                print(f"  new pairs sample: {json.dumps(sample_new_pairs)}")
-            if feedback_config is not None and feedback_expansion["feedback_rejected_bases_sample"]:
-                print(f"  feedback rejected bases sample: {json.dumps(feedback_expansion['feedback_rejected_bases_sample'])}")
-            if status_events:
-                print(f"  last status json: {json.dumps(status_events[-1], sort_keys=True)}")
+        if args.verbose_debug and status_events:
+            print(f"  last status json: {json.dumps(status_events[-1], sort_keys=True)}")
 
         if rc not in (0, 1, 4):
             print(f"warning: arm={arm.name} rc={rc}, continuing", file=sys.stderr)
@@ -983,7 +927,7 @@ def main() -> int:
         "hashcat_logs_dir": hashcat_logs_dir,
         "potfile_path": potfile,
         "total_hashcat_status_events": total_hashcat_status_events,
-        "dictionary_candidate_limit_enabled": dictionary_candidate_limit,
+        "dictionary_candidate_limit": dictionary_candidate_limit,
         "adaptive_slices": current_adaptive_slice,
         "sequential_allocations": sequential_allocations if args.schedule == "sequential" else None,
         "sequential_skipped_slices": sequential_skipped_slices if args.schedule == "sequential" else None,
