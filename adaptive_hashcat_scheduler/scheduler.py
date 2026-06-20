@@ -3,6 +3,8 @@ from dataclasses import dataclass
 import datetime as dt, json, os, random, time
 from typing import Any
 
+FEEDBACK_TYPES = {'feedback', 'predictive_prefix', 'predictive_suffix'}
+
 from adaptive_hashcat_scheduler.config import load_config
 from adaptive_hashcat_scheduler.hashcat.potfile import iter_potfile_cracks
 from adaptive_hashcat_scheduler.hashcat.runner import EXIT_MEANINGS
@@ -31,22 +33,68 @@ def make_arm(cfg):
     if t in {'predictive_prefix','predictive_suffix'}: return PredictiveFeedbackArm(name,t,cfg)
     raise ValueError(f'unknown arm type: {t}')
 
+def _feedback_availability(arm, context, current_adaptive_slice, force_queue: bool = False) -> dict[str, Any]:
+    queue_size = arm._queue(context).queue_size_lines()
+    min_queue_size = int(arm.config.get('min_queue_size', 1))
+    min_slices = int(arm.config.get('min_slices_between_runs', 0))
+    slices_since = current_adaptive_slice - arm.last_run_adaptive_slice
+    reason = None
+    if arm.exhausted:
+        reason = 'exhausted'
+    elif slices_since < min_slices:
+        reason = 'cooldown'
+    elif queue_size < min_queue_size and not force_queue:
+        reason = 'queue_below_minimum'
+    return {
+        'available': reason is None,
+        'availability_reason': reason,
+        'min_slices_between_runs': min_slices,
+        'slices_since_last_run': slices_since,
+        'min_queue_size': min_queue_size,
+        'queue_size': queue_size,
+    }
+
+def _availability(arm, context, current_adaptive_slice, force_queue: bool = False) -> dict[str, Any]:
+    if arm.type in FEEDBACK_TYPES:
+        return _feedback_availability(arm, context, current_adaptive_slice, force_queue)
+    available = arm.is_available(context)
+    return {'available': available, 'availability_reason': None if available else 'unavailable'}
+
 def choose_arm(arms, schedule, warmup, epsilon, rng, current_adaptive_slice):
-    live=[a for a in arms if a.is_available(choose_arm.context)]
-    if not live: return None,'none'
-    if schedule=='round_robin': return sorted(live,key=lambda a:(a.runs, arms.index(a)))[0],'round_robin'
-    if schedule=='sequential': return live[0],'sequential_budget'
+    context = choose_arm.context
+    choose_arm.unavailable = []
+    normal=[]
+    for a in arms:
+        info = _availability(a, context, current_adaptive_slice)
+        a.last_availability = info
+        if info['available']:
+            normal.append(a)
+        elif info.get('availability_reason'):
+            choose_arm.unavailable.append({'arm': a.name, **info})
+    if schedule=='round_robin':
+        return (sorted(normal,key=lambda a:(a.runs, arms.index(a)))[0],'round_robin') if normal else (None,'none')
+    if schedule=='sequential':
+        return (normal[0],'sequential_budget') if normal else (None,'none')
     if warmup:
-        for a in live:
+        for a in normal:
             if a.name in warmup:
                 warmup.remove(a.name); return a,'warmup'
     due=[]
-    for a in live:
+    for a in arms:
         n=a.config.get('force_every_slices')
-        if n:
-            since=current_adaptive_slice-a.last_run_adaptive_slice
-            if since>=n: due.append((since/n,a.runs,a.total_runtime,a.name,a))
+        if not n: continue
+        since=current_adaptive_slice-a.last_run_adaptive_slice
+        if since < n: continue
+        info = _availability(a, context, current_adaptive_slice, force_queue=True)
+        if info['available']:
+            a.last_availability = info
+            due.append((since/n,a.runs,a.total_runtime,a.name,a))
+        elif info.get('availability_reason'):
+            forced_skip = {'arm': a.name, 'forced_cadence_due': True, **info}
+            choose_arm.unavailable.append(forced_skip)
     if due: return sorted(due,key=lambda x:(-x[0],x[1],x[2],x[3]))[0][4],'forced_cadence'
+    live=normal
+    if not live: return None,'none'
     if rng.random()<epsilon: return rng.choice(live),'epsilon_exploration'
     return sorted(live,key=lambda a:(-a.score,a.runs,a.total_runtime,a.name))[0],'highest_score'
 
@@ -76,7 +124,9 @@ def format_slice_oneline(rec: dict[str, Any], total_slices: int) -> str:
         )
     elif rec.get('queue_size_before_slice') is not None:
         before, after, written, enqueued = _feedback_queue_fields(rec)
-        details = f" queue={before}->{after} written={written} enq={enqueued}"
+        details = (f" queue={before}->{after} written={written} enq={enqueued}"
+                   f" gate_queue={rec.get('queue_size')}/{rec.get('min_queue_size')}"
+                   f" cooldown={rec.get('slices_since_last_run')}/{rec.get('min_slices_between_runs')}")
     return (
         f"{prefix}{details} new={rec['new_cracks']} total={rec['total_cracks']} "
         f"reward={_fmt_float(rec['reward'])} "
@@ -101,6 +151,8 @@ def format_slice_verbose(rec: dict[str, Any], total_slices: int) -> str:
             f"Queue: {before} -> {after}",
             f"Candidates written: {written}",
             f"Candidates enqueued: {enqueued}",
+            f"Queue gate: {rec.get('queue_size')} / {rec.get('min_queue_size')}",
+            f"Cooldown: {rec.get('slices_since_last_run')} / {rec.get('min_slices_between_runs')}",
         ])
     lines.extend([
         f"New discoveries: {rec['new_cracks']}",
@@ -151,7 +203,11 @@ def run_scheduler(args) -> int:
     console_mode = 'quiet' if getattr(args, 'quiet', False) else ('verbose' if getattr(args, 'verbose', False) else 'default')
     for job in range(1,total_slices+1):
         arm,reason=choose_arm(arms,args.schedule,warmup if args.schedule=='adaptive' else [],epsilon,rng,current_adaptive_slice)
-        if arm is None: break
+        if arm is None:
+            if console_mode == 'verbose':
+                for unavailable in getattr(choose_arm, 'unavailable', []):
+                    print('Unavailable arm: '+json.dumps(unavailable,separators=(',',':')), flush=True)
+            break
         score_before=arm.score; t0=time.time(); res=arm.run_slice(ctx); res.runtime_seconds=max(0.0,time.time()-t0)
         after=pot_values(potfile); new_pairs=[(h,v) for h,v in after.items() if h not in prev]; prev=after
         discoveries=[v for _,v in new_pairs]
@@ -162,12 +218,17 @@ def run_scheduler(args) -> int:
         if args.schedule=='adaptive' and reason!='warmup':
             arm.last_run_adaptive_slice=current_adaptive_slice; current_adaptive_slice+=1
         n=arm.config.get('force_every_slices'); since=(current_adaptive_slice-arm.last_run_adaptive_slice) if n else None
+        availability_fields = {k: v for k, v in getattr(arm, 'last_availability', {}).items() if k != 'available'}
+        if console_mode == 'verbose':
+            for unavailable in getattr(choose_arm, 'unavailable', []):
+                print('Unavailable arm: '+json.dumps(unavailable,separators=(',',':')), flush=True)
         rec={'timestamp':utc_now(),'job_id':job,'phase':phase,'arm':arm.name,'attack_type':arm.type,'selection_reason':reason,
              'skip_before':res.skip_before,'next_skip_after':res.next_skip_after,'runtime_seconds':res.runtime_seconds,
              'exit_code':res.exit_code,'exit_meaning':EXIT_MEANINGS.get(res.exit_code,'error'),'progress_source':res.progress_source,
              'dictionary_candidate_cursor':res.dictionary_candidate_cursor,'new_cracks':marginal,'marginal_new_cracks':marginal,
              'total_cracks':len(after),'reward':reward,'score_before':score_before,'score_after':arm.score,'exhausted':arm.exhausted,
-             'forced_cadence_interval':n,'slices_since_last_run':since,'overdue_ratio':(since/n if n and since is not None else None), **res.extra}
+             'forced_cadence_interval':n,'slices_since_last_run':since,'overdue_ratio':(since/n if n and since is not None else None),
+             'unavailable_arms':getattr(choose_arm, 'unavailable', []) if console_mode == 'verbose' else None, **availability_fields, **res.extra}
         with open(jobs_path,'a',encoding='utf-8') as f: f.write(json.dumps(rec,separators=(',',':'))+'\n')
         with open(os.path.join(args.out_dir,'hashcat_logs',f'job_{job:06d}.log'),'w',encoding='utf-8') as f: f.write(res.stdout+'\n'+res.stderr)
         completed_slices = job

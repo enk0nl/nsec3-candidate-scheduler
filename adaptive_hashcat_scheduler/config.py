@@ -34,5 +34,10 @@ def load_config(path: str) -> dict[str, Any]:
             if arm.get('prediction_source','leftmost') not in ['full','leftmost']: raise ValueError('invalid prediction_source')
         fe=arm.get('force_every_slices')
         if fe is not None and (not isinstance(fe,int) or isinstance(fe,bool) or fe<=0): raise ValueError('force_every_slices must be positive int')
+        if t in {'feedback','predictive_prefix','predictive_suffix'}:
+            msbr=arm.get('min_slices_between_runs')
+            if msbr is not None and (not isinstance(msbr,int) or isinstance(msbr,bool) or msbr<0): raise ValueError('min_slices_between_runs must be non-negative int')
+            mqs=arm.get('min_queue_size')
+            if mqs is not None and (not isinstance(mqs,int) or isinstance(mqs,bool) or mqs<0): raise ValueError('min_queue_size must be non-negative int')
         arms.append(arm)
     cfg=dict(cfg); cfg['arms']=arms; return cfg

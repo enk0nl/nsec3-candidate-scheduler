@@ -36,7 +36,7 @@ Multiple masks are attempted in config order with independent per-mask keyspace/
 
 A feedback arm is optional and is only registered when explicitly present in the config with `"type": "feedback"`. Set `"enabled": false` to leave it out of scheduling. At most one enabled feedback arm may be configured. `common_labels` is required and must be a non-empty list of strings. Feedback bases and common labels are normalized to lowercase and stripped of surrounding whitespace; single labels, multi-label names, underscores, hyphens, and digits are allowed. Empty names, leading/trailing dots, empty dot components, embedded whitespace, labels longer than 63 characters, and names longer than 253 characters are rejected.
 
-After each slice, newly cracked names are expanded into both `<discovered>.<common>` and `<common>.<discovered>` candidates, deduplicated through persistent feedback state files in the run output directory, and appended to `feedback_queue.txt`. The feedback arm is eligible only while that queue has items. When selected, the queue is written to `feedback_slice_candidates.txt`, drained, and run through hashcat as a dictionary slice using the same runtime limit and reward calculation as other arms.
+After each slice, newly cracked names are expanded into both `<discovered>.<common>` and `<common>.<discovered>` candidates, deduplicated through persistent feedback state files in the run output directory, and appended to `feedback_queue.txt`. Feedback-like arms (`feedback`, `predictive_prefix`, and `predictive_suffix`) are eligible for normal selection only when the queue has at least `min_queue_size` candidates (default `1`) and the arm has waited at least `min_slices_between_runs` adaptive slices (default `0`). When selected, the queue is written to `feedback_slice_candidates.txt`, drained, and run through hashcat as a dictionary slice using the same runtime limit and reward calculation as other arms.
 
 ## Scheduling modes
 
@@ -60,7 +60,7 @@ Adaptive mode uses:
 
 - Epsilon exploration for randomized arm selection
 
-Optional per-arm forced cadence can be configured with `"force_every_slices": N`, where `N` is a positive integer. Forced cadence applies only after adaptive warm-up: if an available arm has not run for at least `N` adaptive-phase slices, it is selected before normal epsilon-greedy selection. If multiple available arms are due, the scheduler selects the most overdue arm by overdue ratio, then fewest runs, lowest runtime, and name.
+Optional per-arm forced cadence can be configured with `"force_every_slices": N`, where `N` is a positive integer. Forced cadence applies only after adaptive warm-up: if an available arm has not run for at least `N` adaptive-phase slices, it is selected before normal epsilon-greedy selection. For feedback-like arms, forced cadence may override `min_queue_size` but never overrides `min_slices_between_runs`; a due arm still inside cooldown is skipped and reported in verbose output. If multiple available arms are due, the scheduler selects the most overdue arm by overdue ratio, then fewest runs, lowest runtime, and name.
 
 ## Reproducibility
 
@@ -174,7 +174,7 @@ After every slice, newly cracked DNS names are normalized and passed to feedback
 
 ## Forced cadence
 
-Any arm may set `force_every_slices`. During the adaptive phase, available overdue arms are selected before epsilon-greedy selection. If multiple arms are due, the scheduler chooses the highest overdue ratio, then fewest runs, lowest runtime, and finally name.
+Any arm may set `force_every_slices`. During the adaptive phase, available overdue arms are selected before epsilon-greedy selection. Feedback-like arms can also set `min_slices_between_runs` (default `0`) and `min_queue_size` (default `1`); forced cadence can bypass the queue minimum but not the cooldown. Per-slice logs include `min_slices_between_runs`, `slices_since_last_run`, `min_queue_size`, `queue_size`, and verbose unavailable diagnostics include `availability_reason`. If multiple arms are due, the scheduler chooses the highest overdue ratio, then fewest runs, lowest runtime, and finally name.
 
 ## Known limitations
 
