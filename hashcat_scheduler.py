@@ -46,6 +46,7 @@ class ArmState:
     mask_keyspaces: Dict[str, int] = dataclasses.field(default_factory=dict)
     mask_next_skip: Dict[str, int] = dataclasses.field(default_factory=dict)
     mask_exhausted: Dict[str, bool] = dataclasses.field(default_factory=dict)
+    last_run_adaptive_slice: int = 0
 
 
 def utc_now() -> str:
@@ -394,6 +395,7 @@ def choose_next_arm(
     rng: random.Random,
     sequential_remaining: Optional[Dict[str, int]] = None,
     out_dir: Optional[str] = None,
+    current_adaptive_slice: int = 0,
 ) -> Tuple[Optional[ArmState], str]:
     def eligible(arm: ArmState) -> bool:
         if arm.exhausted:
@@ -402,6 +404,16 @@ def choose_next_arm(
             if out_dir is None:
                 return False
             return feedback_queue_has_items(feedback_paths(out_dir)["queue"])
+        if arm.arm_type == "brute_force":
+            mask = current_mask(arm)
+            if mask is None:
+                return False
+            keyspace = arm.mask_keyspaces.get(mask)
+            if keyspace is not None and arm.mask_next_skip.get(mask, 0) >= keyspace:
+                return False
+            return True
+        if arm.keyspace is not None and arm.next_skip >= arm.keyspace:
+            return False
         return True
 
     live = [a for a in states if eligible(a)]
@@ -423,6 +435,17 @@ def choose_next_arm(
             if a.name in remaining_set:
                 warmup_remaining.remove(a.name)
                 return a, "warmup"
+    due_arms: List[Tuple[float, int, float, str, ArmState]] = []
+    for a in live:
+        interval = a.config.get("force_every_slices")
+        if interval is None:
+            continue
+        slices_since = current_adaptive_slice - a.last_run_adaptive_slice
+        if slices_since >= interval:
+            overdue_ratio = slices_since / interval
+            due_arms.append((overdue_ratio, a.jobs_run, a.runtime, a.name, a))
+    if due_arms:
+        return sorted(due_arms, key=lambda item: (-item[0], item[1], item[2], item[3]))[0][4], "forced_cadence"
     if rng.random() < epsilon:
         return rng.choice(live), "epsilon_exploration"
     return sorted(live, key=lambda a: (-a.score, a.jobs_run, a.runtime, a.name))[0], "highest_score"
@@ -491,6 +514,9 @@ def main() -> int:
     normalized_arms_cfg: List[Dict[str, Any]] = []
     try:
         for arm_cfg in arms_cfg:
+            force_every_slices = arm_cfg.get("force_every_slices")
+            if force_every_slices is not None and (isinstance(force_every_slices, bool) or not isinstance(force_every_slices, int) or force_every_slices <= 0):
+                raise ValueError(f"arm {arm_cfg.get('name', '<unnamed>')} force_every_slices must be a positive integer when provided")
             if arm_cfg.get("type") == "feedback":
                 validated_feedback = validate_feedback_config(arm_cfg)
                 if validated_feedback.get("enabled", True):
@@ -565,6 +591,7 @@ def main() -> int:
     total_cracks = len(prev_hits)
     job_id = 0
     total_hashcat_status_events = 0
+    current_adaptive_slice = 0
 
     while True:
         if args.total_slices and job_id >= args.total_slices:
@@ -580,9 +607,16 @@ def main() -> int:
             rng,
             sequential_remaining if args.schedule == "sequential" else None,
             args.out_dir,
+            current_adaptive_slice,
         )
         if arm is None:
             break
+
+        selection_adaptive_slice = current_adaptive_slice
+        force_interval = arm.config.get("force_every_slices")
+        slices_since_last_run = (selection_adaptive_slice - arm.last_run_adaptive_slice) if force_interval is not None else None
+        overdue_ratio = (slices_since_last_run / force_interval) if force_interval is not None and slices_since_last_run is not None else None
+        forced_cadence_due = selection_reason == "forced_cadence"
 
         active_mask = current_mask(arm) if arm.arm_type == "brute_force" else None
         if arm.arm_type == "brute_force" and active_mask is None:
@@ -773,6 +807,10 @@ def main() -> int:
             if arm.exhausted and sequential_remaining.get(arm.name, 0) > 0:
                 sequential_skipped_slices[arm.name] += sequential_remaining[arm.name]
                 sequential_remaining[arm.name] = 0
+        if args.schedule == "adaptive" and not is_adaptive_warmup:
+            if rc in EXIT_MEANINGS:
+                arm.last_run_adaptive_slice = current_adaptive_slice
+            current_adaptive_slice += 1
 
         feedback_expansion = {
             "feedback_bases_expanded": 0,
@@ -797,6 +835,11 @@ def main() -> int:
             "schedule": args.schedule,
             "random_seed": random_seed,
             "selection_reason": selection_reason,
+            "forced_cadence_due": forced_cadence_due,
+            "forced_cadence_interval": force_interval,
+            "slices_since_last_run": slices_since_last_run,
+            "overdue_ratio": overdue_ratio,
+            "current_adaptive_slice": selection_adaptive_slice,
             "phase": phase,
             "potfile_scope": potfile_scope,
             "arm": arm.name,
@@ -884,6 +927,8 @@ def main() -> int:
         progress_end = hashcat_fields["hashcat_progress_end"] if hashcat_fields["hashcat_progress_end"] is not None else "unknown"
         status_text = hashcat_fields["hashcat_status_text"] or hashcat_fields["hashcat_status"] or "unknown"
         print(f"[job {job_id}] {args.schedule} / selected {selection_reason}")
+        if forced_cadence_due:
+            print(f"  forced cadence: interval={force_interval}, slices_since_last_run={slices_since_last_run}, overdue_ratio={overdue_ratio:.3f}")
         if is_adaptive_warmup:
             print("  phase: warm-up (score based on arm-local cracks)")
         else:
@@ -939,6 +984,7 @@ def main() -> int:
         "potfile_path": potfile,
         "total_hashcat_status_events": total_hashcat_status_events,
         "dictionary_candidate_limit_enabled": dictionary_candidate_limit,
+        "adaptive_slices": current_adaptive_slice,
         "sequential_allocations": sequential_allocations if args.schedule == "sequential" else None,
         "sequential_skipped_slices": sequential_skipped_slices if args.schedule == "sequential" else None,
         "arms": {
@@ -950,6 +996,8 @@ def main() -> int:
                 "keyspace": a.keyspace,
                 "exhausted": a.exhausted,
                 "total_new_cracks": a.total_new_cracks,
+                "last_run_adaptive_slice": a.last_run_adaptive_slice,
+                "force_every_slices": a.config.get("force_every_slices"),
                 "speed_hps_estimate": (a.total_new_cracks / a.runtime) if a.runtime > 0 else None,
                 "current_mask_index": a.current_mask_index if a.arm_type == "brute_force" else None,
                 "masks": [

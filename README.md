@@ -56,6 +56,8 @@ Adaptive mode uses:
 
 - Epsilon exploration for randomized arm selection
 
+Optional per-arm forced cadence can be configured with `"force_every_slices": N`, where `N` is a positive integer. Forced cadence applies only after adaptive warm-up: if an available arm has not run for at least `N` adaptive-phase slices, it is selected before normal epsilon-greedy selection. If multiple available arms are due, the scheduler selects the most overdue arm by overdue ratio, then fewest runs, lowest runtime, and name.
+
 ## Reproducibility
 
 - Set `random_seed` in config and/or `--random-seed` on CLI.
