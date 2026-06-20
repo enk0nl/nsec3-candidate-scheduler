@@ -18,6 +18,7 @@ A lightweight experimental scheduler for comparative hash cracking experiments u
 - **Dictionary attacks** (`-a 0`)
 - **Pre-generated PCFG wordlists** (treated exactly as dictionary inputs)
 - **Brute-force mask attacks** (`-a 3`, one arm can run one or many explicit masks)
+- **Feedback attacks** (`type: "feedback"`) that expand newly cracked DNS names with configured common labels and run queued candidates as dictionary slices
 
 Current brute-force example targets RFC1035-compatible label characters: lowercase letters, digits, and hyphen.
 For `type: "brute_force"`, configure either:
@@ -26,6 +27,12 @@ For `type: "brute_force"`, configure either:
 - `"masks": ["?1?1?1", "?1?1?1?1", "?1?1?1?1?1"]` (multiple masks in order).
 
 Multiple masks are attempted in config order with independent per-mask keyspace/skip/exhausted state. This replaces using `--increment`, so resume/chunk behavior stays explicit and auditable (especially useful for DNS labels where short names like `www` require shorter masks).
+
+## Feedback arms
+
+A feedback arm is optional and is only registered when explicitly present in the config with `"type": "feedback"`. Set `"enabled": false` to leave it out of scheduling. At most one enabled feedback arm may be configured. `common_labels` is required and must be a non-empty list of strings; labels and discovered DNS names are normalized to lowercase, stripped of surrounding whitespace and trailing dots, and rejected if empty or if they contain empty dot components. Underscore labels are preserved.
+
+After each slice, newly cracked names are expanded into both `<discovered>.<common>` and `<common>.<discovered>` candidates, deduplicated through persistent feedback state files in the run output directory, and appended to `feedback_queue.txt`. The feedback arm is eligible only while that queue has items. When selected, the queue is written to `feedback_slice_candidates.txt`, drained, and run through hashcat as a dictionary slice using the same runtime limit and reward calculation as other arms.
 
 ## Scheduling modes
 
@@ -90,6 +97,7 @@ Each run writes to `--out-dir`:
 - `jobs.jsonl` (per-slice execution metrics)
 - `hits.jsonl` (newly cracked entries)
 - `run_summary.json` (final aggregate summary)
+- `feedback_queue.txt`, `feedback_seen_candidates.txt`, `feedback_expanded_bases.txt`, and `feedback_slice_candidates.txt` when a feedback arm is configured
 
 `jobs.jsonl` now includes parsed hashcat status fields (progress/speed/recovery/status/session/runtime estimates) when available, with `null` values when unavailable.
 
