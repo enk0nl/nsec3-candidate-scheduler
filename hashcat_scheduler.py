@@ -186,7 +186,7 @@ def parse_hashcat_outfile(path: str) -> Dict[str, str]:
             line = line.rstrip("\n")
             if ":" not in line:
                 continue
-            h, v = line.split(":", 1)
+            h, v = line.rsplit(":", 1)
             out[h] = v
     return out
 
@@ -282,12 +282,18 @@ def expand_feedback_from_discoveries(new_discoveries: Iterable[str], feedback_co
     expanded = load_set(paths["expanded"])
     bases_to_append: List[str] = []
     candidates_to_append: List[str] = []
+    rejected_bases: List[str] = []
     generated = 0
     duplicates = 0
     bases_expanded = 0
     for raw in new_discoveries:
+        raw_text = str(raw)
         base = normalize_dns_name(raw)
-        if base is None or base in expanded:
+        if base is None:
+            rejected_bases.append(raw_text)
+            continue
+        if base in expanded:
+            rejected_bases.append(raw_text)
             continue
         bases_expanded += 1
         bases_to_append.append(base)
@@ -307,6 +313,8 @@ def expand_feedback_from_discoveries(new_discoveries: Iterable[str], feedback_co
         "feedback_bases_expanded": bases_expanded,
         "feedback_generated_candidates": generated,
         "feedback_duplicates_skipped": duplicates,
+        "feedback_rejected_bases": len(rejected_bases),
+        "feedback_rejected_bases_sample": rejected_bases[:10],
         "feedback_queue_size_before": queue_before,
         "feedback_candidates_enqueued": len(candidates_to_append),
         "feedback_queue_size_after": queue_before + len(candidates_to_append),
@@ -677,12 +685,14 @@ def main() -> int:
         next_skip = arm.next_skip
         effective_limit = int(limit)
         if arm.arm_type == "dictionary":
-            if isinstance(parsed_restore, int):
+            if isinstance(parsed_restore, int) and parsed_restore > skip_before:
                 next_skip = max(next_skip, parsed_restore)
                 progress_source = "restore_point"
             else:
-                # Conservative fallback: advance by planned limit if no better parser signal exists.
+                # Conservative fallback: advance by planned limit if restore_point is missing or did not advance.
                 next_skip = arm.next_skip + effective_limit
+                if keyspace_for_job is not None:
+                    next_skip = min(next_skip, keyspace_for_job)
                 progress_source = "limit"
         elif arm.arm_type == "brute_force":
             if isinstance(parsed_restore, int) and parsed_restore > skip_before:
@@ -747,10 +757,13 @@ def main() -> int:
             "feedback_bases_expanded": 0,
             "feedback_generated_candidates": 0,
             "feedback_duplicates_skipped": 0,
+            "feedback_rejected_bases": 0,
+            "feedback_rejected_bases_sample": [],
             "feedback_queue_size_before": None,
             "feedback_candidates_enqueued": 0,
             "feedback_queue_size_after": None,
         }
+        sample_new_pairs = [{"hash": h, "value": v} for h, v in new_pairs[:10]]
         if feedback_config is not None and new_pairs:
             feedback_expansion = expand_feedback_from_discoveries((v for _, v in new_pairs), feedback_config, args.out_dir)
 
@@ -791,6 +804,7 @@ def main() -> int:
             "score_before": score_before,
             "score_after": arm.score,
             "exhausted": arm.exhausted,
+            "new_pairs_sample": sample_new_pairs,
             "feedback_slice_candidates": feedback_slice_candidates,
             "feedback_queue_size_before_slice": feedback_queue_size_before,
             "feedback_candidates_written_to_slice": feedback_candidates_written,
@@ -827,6 +841,9 @@ def main() -> int:
                 f.write(f"feedback_bases_expanded: {feedback_expansion['feedback_bases_expanded']}\n")
                 f.write(f"feedback_generated_candidates: {feedback_expansion['feedback_generated_candidates']}\n")
                 f.write(f"feedback_duplicates_skipped: {feedback_expansion['feedback_duplicates_skipped']}\n")
+                f.write(f"feedback_rejected_bases: {feedback_expansion['feedback_rejected_bases']}\n")
+                f.write(f"feedback_rejected_bases_sample: {json.dumps(feedback_expansion['feedback_rejected_bases_sample'])}\n")
+                f.write(f"new_pairs_sample: {json.dumps(sample_new_pairs)}\n")
             f.write("stdout:\n")
             f.write(stdout_text)
             f.write("\nstderr:\n")
@@ -863,6 +880,7 @@ def main() -> int:
                 f"bases={feedback_expansion['feedback_bases_expanded']}, "
                 f"generated={feedback_expansion['feedback_generated_candidates']}, "
                 f"duplicates={feedback_expansion['feedback_duplicates_skipped']}, "
+                f"rejected_bases={feedback_expansion['feedback_rejected_bases']}, "
                 f"queue_before={feedback_expansion['feedback_queue_size_before']}, "
                 f"queue_after={feedback_expansion['feedback_queue_size_after']}"
             )
@@ -870,6 +888,10 @@ def main() -> int:
         print(f"  hashcat: status={status_text}, progress={progress_cur}/{progress_end}, speed={format_speed_hps(hashcat_fields['hashcat_speed_hps'])}")
         if args.verbose:
             print(f"  hashcat status events parsed: {len(status_events)}")
+            if sample_new_pairs:
+                print(f"  new pairs sample: {json.dumps(sample_new_pairs)}")
+            if feedback_config is not None and feedback_expansion["feedback_rejected_bases_sample"]:
+                print(f"  feedback rejected bases sample: {json.dumps(feedback_expansion['feedback_rejected_bases_sample'])}")
             if status_events:
                 print(f"  last status json: {json.dumps(status_events[-1], sort_keys=True)}")
 
