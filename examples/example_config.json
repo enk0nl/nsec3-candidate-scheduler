@@ -20,6 +20,10 @@
       "type": "brute_force",
       "custom_charset_1": "abcdefghijklmnopqrstuvwxyz0123456789-",
       "mask": "?1?1?1?1?1?1"
+    },
+    {
+      "name": "feedback",
+      "type": "feedback"
     }
   ]
 }

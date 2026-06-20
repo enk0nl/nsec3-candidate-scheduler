@@ -28,6 +28,17 @@ EXIT_MEANINGS = {
     4: "runtime_reached",
 }
 
+DEFAULT_FEEDBACK_LABELS = [
+    "www", "mail", "smtp", "imap", "pop", "webmail", "vpn", "portal", "admin",
+    "api", "dev", "test", "staging", "cdn", "autodiscover", "_domainkey",
+    "_dmarc", "_acme-challenge",
+]
+
+FEEDBACK_QUEUE_PATH = ""
+FEEDBACK_SEEN_CANDIDATES_PATH = ""
+FEEDBACK_EXPANDED_BASES_PATH = ""
+FEEDBACK_SLICE_CANDIDATES_PATH = ""
+
 
 @dataclasses.dataclass
 class ArmState:
@@ -62,6 +73,97 @@ def count_lines(path: str) -> int:
         for _ in f:
             n += 1
     return n
+
+
+def normalize_dns_name(value: str) -> Optional[str]:
+    name = value.strip().lower().rstrip(".")
+    if not name or ".." in name:
+        return None
+    if any(part == "" for part in name.split(".")):
+        return None
+    return name
+
+
+def load_set(path: str) -> set[str]:
+    if not os.path.exists(path):
+        return set()
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        return {line.rstrip("\n") for line in f if line.rstrip("\n")}
+
+
+def append_lines(path: str, lines: List[str]) -> None:
+    if not lines:
+        return
+    ensure_dir(os.path.dirname(path))
+    with open(path, "a", encoding="utf-8") as f:
+        for line in lines:
+            f.write(f"{line}\n")
+
+
+def feedback_queue_has_items() -> bool:
+    if not FEEDBACK_QUEUE_PATH or not os.path.exists(FEEDBACK_QUEUE_PATH):
+        return False
+    with open(FEEDBACK_QUEUE_PATH, "r", encoding="utf-8", errors="replace") as f:
+        return any(line.strip() for line in f)
+
+
+def expand_feedback_bases(new_discoveries: List[str], common_labels: Optional[List[str]] = None) -> Dict[str, int]:
+    labels = common_labels if common_labels is not None else DEFAULT_FEEDBACK_LABELS
+    expanded_bases = load_set(FEEDBACK_EXPANDED_BASES_PATH)
+    seen_candidates = load_set(FEEDBACK_SEEN_CANDIDATES_PATH)
+    bases_to_append: List[str] = []
+    candidates_to_append: List[str] = []
+    duplicate_candidates_skipped = 0
+
+    for raw_discovery in new_discoveries:
+        base = normalize_dns_name(raw_discovery)
+        if base is None or base in expanded_bases:
+            continue
+        generated_for_base: List[str] = []
+        for common in labels:
+            for candidate in (f"{base}.{common}", f"{common}.{base}"):
+                normalized = normalize_dns_name(candidate)
+                if normalized is None:
+                    continue
+                if normalized in seen_candidates:
+                    duplicate_candidates_skipped += 1
+                    continue
+                seen_candidates.add(normalized)
+                generated_for_base.append(normalized)
+        candidates_to_append.extend(generated_for_base)
+        expanded_bases.add(base)
+        bases_to_append.append(base)
+
+    append_lines(FEEDBACK_QUEUE_PATH, candidates_to_append)
+    append_lines(FEEDBACK_SEEN_CANDIDATES_PATH, candidates_to_append)
+    append_lines(FEEDBACK_EXPANDED_BASES_PATH, bases_to_append)
+    return {
+        "generated_feedback_candidates": len(candidates_to_append),
+        "duplicate_feedback_candidates_skipped": duplicate_candidates_skipped,
+        "feedback_bases_expanded": len(bases_to_append),
+    }
+
+
+def run_feedback_slice(args: argparse.Namespace, arm_potfile: str) -> Tuple[List[str], int, int]:
+    queue_size_before = count_lines(FEEDBACK_QUEUE_PATH) if os.path.exists(FEEDBACK_QUEUE_PATH) else 0
+    candidates: List[str] = []
+    if os.path.exists(FEEDBACK_QUEUE_PATH):
+        with open(FEEDBACK_QUEUE_PATH, "r", encoding="utf-8", errors="replace") as f:
+            candidates = [line.rstrip("\n") for line in f if line.strip()]
+    with open(FEEDBACK_SLICE_CANDIDATES_PATH, "w", encoding="utf-8") as f:
+        for candidate in candidates:
+            f.write(f"{candidate}\n")
+    open(FEEDBACK_QUEUE_PATH, "w", encoding="utf-8").close()
+    cmd = [
+        "hashcat", "-m", str(args.hash_mode),
+        "-a", "0",
+        "--runtime", str(args.slice_seconds),
+        "--status", "--status-json", "--status-timer", "5",
+        "--potfile-path", arm_potfile,
+        args.hashes,
+        FEEDBACK_SLICE_CANDIDATES_PATH,
+    ]
+    return cmd, queue_size_before, len(candidates)
 
 
 def parse_hashcat_status_lines(output_text: str) -> List[Dict[str, Any]]:
@@ -226,14 +328,18 @@ def choose_next_arm(
     rng: random.Random,
     sequential_remaining: Optional[Dict[str, int]] = None,
 ) -> Tuple[Optional[ArmState], str]:
-    live = [a for a in states if not a.exhausted]
+    live = [
+        a for a in states
+        if not a.exhausted and (a.arm_type != "feedback" or feedback_queue_has_items())
+    ]
     if not live:
         return None, "none"
     if schedule == "sequential":
         if not sequential_remaining:
             return None, "none"
+        live_names = {a.name for a in live}
         for a in states:
-            if sequential_remaining.get(a.name, 0) > 0:
+            if a.name in live_names and sequential_remaining.get(a.name, 0) > 0:
                 return a, "sequential_budget"
         return None, "none"
     if schedule == "round_robin":
@@ -251,6 +357,11 @@ def choose_next_arm(
 
 
 def main() -> int:
+    global FEEDBACK_QUEUE_PATH
+    global FEEDBACK_SEEN_CANDIDATES_PATH
+    global FEEDBACK_EXPANDED_BASES_PATH
+    global FEEDBACK_SLICE_CANDIDATES_PATH
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--hashes", required=True)
     ap.add_argument("--hash-mode", type=int, default=8300)
@@ -276,6 +387,10 @@ def main() -> int:
 
     ensure_dir(args.out_dir)
     potfile = os.path.join(args.out_dir, "run.pot")
+    FEEDBACK_QUEUE_PATH = os.path.join(args.out_dir, "feedback_queue.txt")
+    FEEDBACK_SEEN_CANDIDATES_PATH = os.path.join(args.out_dir, "feedback_seen_candidates.txt")
+    FEEDBACK_EXPANDED_BASES_PATH = os.path.join(args.out_dir, "feedback_expanded_bases.txt")
+    FEEDBACK_SLICE_CANDIDATES_PATH = os.path.join(args.out_dir, "feedback_slice_candidates.txt")
     warmup_potfiles_dir = os.path.join(args.out_dir, "warmup_potfiles")
     hashcat_logs_dir = os.path.join(args.out_dir, "hashcat_logs")
     jobs_path = os.path.join(args.out_dir, "jobs.jsonl")
@@ -287,7 +402,6 @@ def main() -> int:
     for p in (potfile, jobs_path, hits_path):
         if os.path.exists(p):
             os.remove(p)
-
     cfg = read_json(args.config)
     alpha = args.alpha if args.alpha is not None else float(cfg.get("alpha", 0.2))
     epsilon = args.epsilon if args.epsilon is not None else float(cfg.get("epsilon", 0.1))
@@ -305,11 +419,25 @@ def main() -> int:
     # "source" (e.g., "pcfg") is metadata only; scheduler behavior is determined by "type".
     # Pre-generated PCFG candidate files should use type="dictionary" and a wordlist path.
     states: List[ArmState] = [ArmState(name=a["name"], arm_type=a["type"], config=a) for a in arms_cfg]
+    feedback_arms = [st for st in states if st.arm_type == "feedback"]
+    feedback_enabled = bool(feedback_arms)
+    feedback_labels = feedback_arms[0].config.get("common_labels", DEFAULT_FEEDBACK_LABELS) if feedback_enabled else DEFAULT_FEEDBACK_LABELS
+    if feedback_enabled:
+        for p in (
+            FEEDBACK_QUEUE_PATH,
+            FEEDBACK_SEEN_CANDIDATES_PATH,
+            FEEDBACK_EXPANDED_BASES_PATH,
+            FEEDBACK_SLICE_CANDIDATES_PATH,
+        ):
+            if not os.path.exists(p):
+                open(p, "w", encoding="utf-8").close()
     for st in states:
         if st.arm_type == "dictionary":
             st.keyspace = count_lines(st.config["wordlist"])
         elif st.arm_type == "brute_force":
             st.keyspace = compute_bruteforce_keyspace(st)
+        elif st.arm_type == "feedback":
+            st.keyspace = None
         else:
             print(f"unknown arm type in config: {st.arm_type}", file=sys.stderr)
             return 2
@@ -376,14 +504,19 @@ def main() -> int:
         )
         potfile_scope = "arm_local" if is_adaptive_warmup else "shared"
 
-        cmd = [
-            "hashcat", "-m", str(args.hash_mode),
-            "-a", "0" if arm.arm_type == "dictionary" else "3",
-            "--runtime", str(args.slice_seconds),
-            "--status", "--status-json", "--status-timer", "5",
-            "--potfile-path", arm_potfile,
-            args.hashes,
-        ]
+        feedback_queue_size_before = None
+        feedback_candidates_written = None
+        if arm.arm_type == "feedback":
+            cmd, feedback_queue_size_before, feedback_candidates_written = run_feedback_slice(args, arm_potfile)
+        else:
+            cmd = [
+                "hashcat", "-m", str(args.hash_mode),
+                "-a", "0" if arm.arm_type == "dictionary" else "3",
+                "--runtime", str(args.slice_seconds),
+                "--status", "--status-json", "--status-timer", "5",
+                "--potfile-path", arm_potfile,
+                args.hashes,
+            ]
 
         if arm.arm_type == "dictionary":
             cmd.extend(["--skip", str(arm.next_skip), "--limit", str(limit), arm.config["wordlist"]])
@@ -396,6 +529,8 @@ def main() -> int:
                     idx = underscored_key[-1]
                     cmd.extend([f"-{idx}", str(cs_value)])
             cmd.append(arm.config["mask"])
+        elif arm.arm_type == "feedback":
+            pass
         else:
             print(f"unknown arm type: {arm.arm_type}", file=sys.stderr)
             arm.exhausted = True
@@ -418,10 +553,13 @@ def main() -> int:
         marginal_new_cracks = 0
         new_pairs: List[Tuple[str, str]] = []
         if is_adaptive_warmup:
+            before_merge_hits = parse_hashcat_outfile(potfile)
             _, merged_new = merge_potfile_entries(potfile, arm_potfile)
             marginal_new_cracks = merged_new
-            total_cracks = len(parse_hashcat_outfile(potfile))
-            prev_hits = parse_hashcat_outfile(potfile)
+            merged_hits = parse_hashcat_outfile(potfile)
+            new_pairs = [(h, v) for h, v in merged_hits.items() if h not in before_merge_hits]
+            total_cracks = len(merged_hits)
+            prev_hits = merged_hits
         else:
             after_hits = parse_hashcat_outfile(potfile)
             new_pairs = [(h, v) for h, v in after_hits.items() if h not in prev_hits]
@@ -467,6 +605,9 @@ def main() -> int:
                 progress_source = "limit_fallback_exhausted"
             else:
                 progress_source = "unknown"
+        elif arm.arm_type == "feedback":
+            next_skip = 0
+            progress_source = "queue_slice"
         else:
             if isinstance(parsed_restore, int):
                 next_skip = max(next_skip, parsed_restore)
@@ -475,7 +616,7 @@ def main() -> int:
         arm.next_skip = next_skip
         if arm.keyspace is not None and arm.next_skip >= arm.keyspace:
             arm.exhausted = True
-        if rc == 1:
+        if rc == 1 and arm.arm_type != "feedback":
             arm.exhausted = True
 
         if is_adaptive_warmup:
@@ -493,6 +634,22 @@ def main() -> int:
             if arm.exhausted and sequential_remaining.get(arm.name, 0) > 0:
                 sequential_skipped_slices[arm.name] += sequential_remaining[arm.name]
                 sequential_remaining[arm.name] = 0
+
+        # Feedback arm: queue-driven and available only when queued candidates exist.
+        # It has no depth limit or seed cap. Runaway feedback is controlled by global
+        # candidate deduplication, expand-each-base-once behavior, and the normal
+        # runtime-limited scheduler slice. This simple implementation moves the whole
+        # queue into a slice file; if hashcat stops before consuming it, unconsumed
+        # candidates are not restored.
+        feedback_stats = (
+            expand_feedback_bases([v for _, v in new_pairs], feedback_labels)
+            if feedback_enabled
+            else {
+                "generated_feedback_candidates": 0,
+                "duplicate_feedback_candidates_skipped": 0,
+                "feedback_bases_expanded": 0,
+            }
+        )
 
         job_id += 1
         exit_meaning = EXIT_MEANINGS.get(rc, "error")
@@ -531,6 +688,11 @@ def main() -> int:
             "score_before": score_before,
             "score_after": arm.score,
             "exhausted": arm.exhausted,
+            "feedback_queue_size_before": feedback_queue_size_before,
+            "feedback_candidates_written": feedback_candidates_written,
+            "generated_feedback_candidates": feedback_stats["generated_feedback_candidates"],
+            "duplicate_feedback_candidates_skipped": feedback_stats["duplicate_feedback_candidates_skipped"],
+            "feedback_bases_expanded": feedback_stats["feedback_bases_expanded"],
         }
         rec.update(hashcat_fields)
         with open(jobs_path, "a", encoding="utf-8") as f:
@@ -568,6 +730,10 @@ def main() -> int:
         print(f"  skip: {skip_before} -> {arm.next_skip} / keyspace={arm.keyspace if arm.keyspace is not None else 'unknown'} source={progress_source}")
         print(f"  runtime: {runtime_seconds:.1f}s, exit={rc} {exit_meaning}")
         print(f"  cracks: arm_local={arm_local_cracks}, marginal_new={marginal_new_cracks}, total={total_cracks}, reward={reward:.3f}/s")
+        if arm.arm_type == "feedback":
+            print(f"  feedback: queue_before={feedback_queue_size_before}, slice_candidates={feedback_candidates_written}, new_discoveries={marginal_new_cracks}, generated={feedback_stats['generated_feedback_candidates']}, duplicates_skipped={feedback_stats['duplicate_feedback_candidates_skipped']}, bases_expanded={feedback_stats['feedback_bases_expanded']}, reward={reward:.3f}/s")
+        elif feedback_stats["generated_feedback_candidates"] or feedback_stats["feedback_bases_expanded"]:
+            print(f"  feedback expansion: new_discoveries={marginal_new_cracks}, generated={feedback_stats['generated_feedback_candidates']}, duplicates_skipped={feedback_stats['duplicate_feedback_candidates_skipped']}, bases_expanded={feedback_stats['feedback_bases_expanded']}")
         print(f"  score: {score_before:.3f} -> {arm.score:.3f}")
         print(f"  hashcat: status={status_text}, progress={progress_cur}/{progress_end}, speed={format_speed_hps(hashcat_fields['hashcat_speed_hps'])}")
         if args.verbose:

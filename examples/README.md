@@ -4,7 +4,7 @@ This directory contains a minimal reproducible experiment config for `hashcat_sc
 
 ## What the config is
 
-`example_config.json` defines three attack arms plus scheduler parameters (`random_seed`, `alpha`, `epsilon`) used for fixed-runtime-slice comparisons.
+`example_config.json` defines four attack arms plus scheduler parameters (`random_seed`, `alpha`, `epsilon`) used for fixed-runtime-slice comparisons.
 
 ## Arms in `example_config.json`
 
@@ -17,6 +17,9 @@ This directory contains a minimal reproducible experiment config for `hashcat_sc
    - Type: `brute_force`
    - Targets RFC1035-compatible label characters: lowercase letters, digits, and hyphen (`-`).
    - Charset: `abcdefghijklmnopqrstuvwxyz0123456789-` via `custom_charset_1` and mask `?1?1?1?1?1?1`.
+4. **Feedback DNS candidate arm** (`feedback`)
+   - Type: `feedback`
+   - Queue-driven arm that expands newly cracked labels into DNS-style candidates and is only selectable when its queue has candidates.
 
 ## Runtime, scheduling, and reproducibility
 
@@ -42,6 +45,7 @@ This directory contains a minimal reproducible experiment config for `hashcat_sc
 - `jobs.jsonl` includes parsed hashcat statistics (status/progress/speed/recovery/runtime fields) for later plotting/analysis.
 - Brute-force masks use hashcat keyspace tracking (`--keyspace`) with skip/limit progression.
 - Dictionary attacks (including pre-generated PCFG files) use line-based skip/limit tracking.
+- Feedback attacks are configured as an arm with `"type": "feedback"` and use persistent queue files in `--out-dir`.
 - `--verbose` adds extra scheduler detail (command and parsed status summary), without live full hashcat output spam.
 
 ## Example command
