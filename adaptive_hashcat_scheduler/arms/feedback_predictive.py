@@ -1,0 +1,74 @@
+from __future__ import annotations
+from typing import Any
+
+from adaptive_hashcat_scheduler.arms.base import Arm, SliceResult
+from adaptive_hashcat_scheduler.feedback.normalize import normalize_dns_name, leftmost_label
+from adaptive_hashcat_scheduler.feedback.predictive_model import PredictiveModel
+from adaptive_hashcat_scheduler.feedback.queue import FeedbackQueueState
+from adaptive_hashcat_scheduler.hashcat.runner import build_hashcat_command, run_cmd
+
+class PredictiveFeedbackArm(Arm):
+    def __init__(self, name: str, arm_type: str, config: dict[str, Any]):
+        super().__init__(name=name, type=arm_type, config=config)
+        self.model = PredictiveModel.load_tsv(config['model'])
+        self.queue_state: FeedbackQueueState | None = None
+        self.last_expansion = self._empty_metrics()
+
+    def _queue(self, context) -> FeedbackQueueState:
+        if self.queue_state is None or str(self.queue_state.out_dir) != context.out_dir:
+            self.queue_state = FeedbackQueueState(context.out_dir, self.name)
+        return self.queue_state
+
+    def _empty_metrics(self):
+        return {'bases_expanded': 0, 'predictions_generated': 0, 'candidates_enqueued': 0,
+                'duplicates_skipped': 0, 'rejected_candidates': 0}
+
+    def is_available(self, context) -> bool:
+        return (not self.exhausted) and self._queue(context).queue_has_items()
+
+    def run_slice(self, context) -> SliceResult:
+        q = self._queue(context)
+        before = q.queue_size_lines()
+        slice_file, written, after = q.move_queue_to_slice_file()
+        cmd = build_hashcat_command(context.hashcat_bin, context.hash_mode, 0, context.slice_seconds,
+                                    context.potfile, context.hashes, candidate=slice_file)
+        rc, out, err = run_cmd(cmd)
+        return SliceResult(exit_code=rc, stdout=out, stderr=err, extra={
+            'model_path': self.config['model'], 'base_mode': self.config.get('base_mode', 'full'),
+            'prediction_source': self.config.get('prediction_source', 'leftmost'),
+            'queue_size_before_slice': before, 'candidates_written_to_slice': written,
+            'queue_size_after_slice': after, **self.last_expansion})
+
+    def on_new_discoveries(self, discoveries, context) -> dict[str, Any]:
+        q = self._queue(context)
+        seen = q.load_seen_candidates()
+        expanded = q.load_expanded_bases()
+        to_enqueue, bases = [], []
+        metrics = self._empty_metrics()
+        for raw in discoveries:
+            name = normalize_dns_name(raw)
+            if name is None:
+                metrics['rejected_candidates'] += 1; continue
+            base = name if self.config.get('base_mode', 'full') == 'full' else leftmost_label(name)
+            source = name if self.config.get('prediction_source', 'leftmost') == 'full' else leftmost_label(name)
+            if not base or not source or base in expanded:
+                continue
+            preds = self.model.predict(source, min_sim=float(self.config.get('min_sim', 0.7)), tau=float(self.config.get('tau', 2.0)),
+                                       gamma=float(self.config.get('gamma', 0.0)), score_floor=float(self.config.get('score_floor', -5.0)),
+                                       k_neighbors=int(self.config.get('k_neighbors', 30)),
+                                       top_predictions_per_neighbor=int(self.config.get('top_predictions_per_neighbor', 100)),
+                                       max_predictions=int(self.config.get('max_predictions', 100)))
+            metrics['predictions_generated'] += len(preds)
+            for pred in preds:
+                cand = f'{pred}.{base}' if self.type == 'predictive_prefix' else f'{base}.{pred}'
+                cand = normalize_dns_name(cand)
+                if cand is None:
+                    metrics['rejected_candidates'] += 1; continue
+                if cand in seen:
+                    metrics['duplicates_skipped'] += 1; continue
+                seen.add(cand); to_enqueue.append(cand)
+            expanded.add(base); bases.append(base); metrics['bases_expanded'] += 1
+        metrics['candidates_enqueued'] = q.append_candidates(to_enqueue)
+        q.mark_bases_expanded(bases)
+        self.last_expansion = metrics
+        return {f'{self.name}_{k}': v for k, v in metrics.items()}

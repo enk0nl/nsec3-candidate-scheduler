@@ -1,3 +1,2 @@
-#!/usr/bin/env python3
 from adaptive_hashcat_scheduler.cli import main
 raise SystemExit(main())

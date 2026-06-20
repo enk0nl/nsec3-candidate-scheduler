@@ -116,3 +116,70 @@ Use `--verbose` to print extra scheduler details without streaming full live has
 - Dictionary cursor advancement uses hashcat status JSON progress scaled by recovered salts; if status progress cannot be parsed, the dictionary cursor is left unchanged. Experimental dictionary chunking is available only when `dictionary_candidate_limit` is set to a positive integer in config; the default is `null`/absent and does not pass `--limit`.
 - Dictionary/brute-force offset advancement can be approximate when hashcat progress fields are incomplete.
 - The scheduler is intentionally minimal and experimental.
+
+## Running the scheduler
+
+The package entry point is now:
+
+```bash
+python3 -m adaptive_hashcat_scheduler run \
+  --hashes /path/to/nsec3_hashcat.txt \
+  --hash-mode 8300 \
+  --config configs/adaptive_predictive_feedback.json \
+  --out-dir runs/adaptive_predictive \
+  --schedule adaptive \
+  --total-slices 150 \
+  --slice-seconds 60 \
+  --verbose
+```
+
+The legacy `hashcat_scheduler.py` script remains as a thin wrapper around the package CLI. Dictionary arms still use hashcat JSON progress scaled by `recovered_salts_total` to advance the candidate cursor for NSEC3 mode 8300, and brute-force arms remain explicit mask arms.
+
+## Training directional predictive feedback models
+
+Train both directional adjacent-label models from a hashcat potfile or a plain cracked-name file:
+
+```bash
+python3 -m adaptive_hashcat_scheduler train-predictive-feedback \
+  --input /path/to/training.pot \
+  --input-format auto \
+  --output-prefix-model models/prefix_pairs.tsv \
+  --output-suffix-model models/suffix_pairs.tsv
+```
+
+Potfile parsing uses the final colon-separated field as the cracked DNS value, which is required for NSEC3 hashcat mode 8300 potfiles.
+
+## Prefix model vs suffix model
+
+The two predictive arms intentionally use separate directional models:
+
+- Prefix model: `source/context -> likely left label`. From `child.parent`, it learns `parent -> child` and is used by `predictive_prefix` to generate `predicted.base`.
+- Suffix model: `source/context -> likely right label`. From `child.parent`, it learns `child -> parent` and is used by `predictive_suffix` to generate `base.predicted`.
+
+For `k2._domainkey.example`, the prefix model learns `_domainkey -> k2` and `example -> _domainkey`; the suffix model learns `k2 -> _domainkey` and `_domainkey -> example`.
+
+## Enabling predictive_prefix and predictive_suffix arms
+
+Predictive arms are never injected automatically. Add each arm explicitly to the config. Each arm has independent scheduling state and independent text files named after the arm, for example `predictive-prefix_queue.txt`, `predictive-prefix_seen_candidates.txt`, and `predictive-prefix_expanded_bases.txt`.
+
+See `configs/adaptive_predictive_feedback.json` for a complete example with `predictive_prefix` and `predictive_suffix` arms.
+
+## Candidate generation
+
+After every slice, newly cracked DNS names are normalized and passed to feedback arms. With the recommended initial setting, `base_mode = "full"` and `prediction_source = "leftmost"`, the model predicts from the leftmost label while generated candidates retain the full discovered base.
+
+- `predictive_prefix` generates `prediction + "." + base`.
+- `predictive_suffix` generates `base + "." + prediction`.
+- The optional `feedback` arm remains common-label based and generates both `base.common` and `common.base`.
+
+## Forced cadence
+
+Any arm may set `force_every_slices`. During the adaptive phase, available overdue arms are selected before epsilon-greedy selection. If multiple arms are due, the scheduler chooses the highest overdue ratio, then fewest runs, lowest runtime, and finally name.
+
+## Known limitations
+
+- The predictive model is a simple adjacent-pair model with trigram smoothing.
+- The scheduler is tuned for DNS/NSEC3 hashcat mode 8300.
+- Text-file feedback queues may need SQLite or another transactional store later.
+- Feedback slice partial resume is limited because v1 drains the full queue into the slice file.
+- Separate prefix/suffix predictors may produce overlapping candidates; dedupe is per-arm in v1.
