@@ -16,10 +16,14 @@
       "wordlist": "/data/pcfg/pcfg_dns_100m.txt"
     },
     {
-      "name": "alnum-hyphen-len6",
+      "name": "bf-rfc1035-len3-5",
       "type": "brute_force",
       "custom_charset_1": "abcdefghijklmnopqrstuvwxyz0123456789-",
-      "mask": "?1?1?1?1?1?1"
+      "masks": [
+        "?1?1?1",
+        "?1?1?1?1",
+        "?1?1?1?1?1"
+      ]
     }
   ]
 }
