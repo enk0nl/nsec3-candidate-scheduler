@@ -29,6 +29,9 @@ class ParentDomainFeedbackArm(Arm):
             'parent_candidates_generated': 0,
             'parent_candidates_enqueued': 0,
             'parent_duplicates_skipped': 0,
+            'parent_duplicates_seen_candidates': 0,
+            'parent_duplicates_queued': 0,
+            'parent_duplicates_already_cracked': 0,
             'parent_rejected_candidates': 0,
         }
 
@@ -78,7 +81,11 @@ class ParentDomainFeedbackArm(Arm):
         cracked.discard(None)
         to_enqueue: list[str] = []
         bases: list[str] = []
-        metrics = self._empty_metrics()
+        metrics: dict[str, Any] = self._empty_metrics()
+        debug_enabled = bool(self.config.get('debug_expansions', False))
+        debug_sample_size = max(0, int(self.config.get('debug_sample_size', 20)))
+        parent_samples: list[str] = []
+        debug_records: list[dict[str, Any]] = []
 
         for raw in discoveries:
             base = normalize_dns_name(raw)
@@ -87,24 +94,58 @@ class ParentDomainFeedbackArm(Arm):
                 continue
             if base in expanded:
                 continue
-            for parent in self._parents_for(base):
+
+            record = {
+                'base': base,
+                'generated_parents': [],
+                'enqueued': [],
+                'skipped_already_cracked': [],
+                'skipped_seen': [],
+                'skipped_queued': [],
+                'rejected': [],
+            }
+            parents = self._parents_for(base)
+            for parent in parents:
                 metrics['parent_candidates_generated'] += 1
+                if len(parent_samples) < debug_sample_size:
+                    parent_samples.append(parent)
+                record['generated_parents'].append(parent)
                 # _parents_for normalizes each candidate; keep this guard for validator parity.
                 cand = normalize_dns_name(parent)
                 if cand is None:
                     metrics['parent_rejected_candidates'] += 1
+                    record['rejected'].append(parent)
                     continue
-                if cand in seen or cand in queued or cand in cracked:
+                if cand in cracked:
+                    metrics['parent_duplicates_already_cracked'] += 1
                     metrics['parent_duplicates_skipped'] += 1
+                    record['skipped_already_cracked'].append(cand)
+                    continue
+                if cand in queued:
+                    metrics['parent_duplicates_queued'] += 1
+                    metrics['parent_duplicates_skipped'] += 1
+                    record['skipped_queued'].append(cand)
+                    continue
+                if cand in seen:
+                    metrics['parent_duplicates_seen_candidates'] += 1
+                    metrics['parent_duplicates_skipped'] += 1
+                    record['skipped_seen'].append(cand)
                     continue
                 seen.add(cand)
                 queued.add(cand)
                 to_enqueue.append(cand)
+                record['enqueued'].append(cand)
             expanded.add(base)
             bases.append(base)
             metrics['parent_bases_expanded'] += 1
+            if debug_enabled and len(debug_records) < debug_sample_size:
+                debug_records.append(record)
 
         metrics['parent_candidates_enqueued'] = q.append_candidates(to_enqueue)
+        if debug_sample_size > 0:
+            metrics['parent_generated_samples'] = parent_samples
+        if debug_enabled:
+            metrics['parent_debug_expansions'] = debug_records
         q.mark_bases_expanded(bases)
         self.last_expansion = metrics
-        return {f'{self.name}_{k}': v for k, v in metrics.items()}
+        return metrics

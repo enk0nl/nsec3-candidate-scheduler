@@ -102,6 +102,12 @@ def load_config(path: str) -> dict[str, Any]:
             isp=arm.get('include_single_label_parent', True)
             if not isinstance(isp, bool): raise ValueError('include_single_label_parent must be boolean')
             arm['include_single_label_parent']=isp
+            de=arm.get('debug_expansions', False)
+            if not isinstance(de, bool): raise ValueError('debug_expansions must be boolean')
+            arm['debug_expansions']=de
+            dss=arm.get('debug_sample_size', 20)
+            if not isinstance(dss, int) or isinstance(dss, bool) or dss < 0: raise ValueError('debug_sample_size must be non-negative int')
+            arm['debug_sample_size']=dss
         if t=='static_affix_feedback':
             arm=dict(arm)
             for key in ('prefixes','suffixes'):
