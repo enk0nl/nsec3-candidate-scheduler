@@ -15,6 +15,7 @@ from adaptive_hashcat_scheduler.arms.feedback_predictive import PredictiveFeedba
 from adaptive_hashcat_scheduler.arms.permutation import PermutationArm
 from adaptive_hashcat_scheduler.arms.static_affix_feedback import StaticAffixFeedbackArm
 from adaptive_hashcat_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
+from adaptive_hashcat_scheduler.arms.amass_osint import AmassOsintArm
 
 @dataclass
 class SchedulerContext:
@@ -57,6 +58,7 @@ def make_arm(cfg):
     if t=='permutation': return PermutationArm(name,t,cfg)
     if t=='static_affix_feedback': return StaticAffixFeedbackArm(name,t,cfg)
     if t=='parent_domain_feedback': return ParentDomainFeedbackArm(name,t,cfg)
+    if t=='amass_osint': return AmassOsintArm(name,t,cfg)
     raise ValueError(f'unknown arm type: {t}')
 
 def _feedback_pending_virtual_streams(arm, context) -> int:
@@ -126,6 +128,9 @@ def choose_arm(arms, schedule, warmup, epsilon, rng, current_adaptive_slice):
         for a in normal:
             if a.name in warmup:
                 warmup.remove(a.name); return a,'warmup'
+    first_ready=[a for a in normal if getattr(a, 'first_run_pending', False)]
+    if first_ready:
+        return sorted(first_ready, key=lambda a:(a.runs,a.total_runtime,a.name))[0], 'first_run_ready'
     due=[]
     for a in arms:
         if a.name in skipped_once:
@@ -279,6 +284,9 @@ def run_scheduler(args) -> int:
         optimized_kernels = False
     ctx=SchedulerContext(args.hashes,args.hash_mode,args.out_dir,args.slice_seconds,potfile,getattr(args,'hashcat_bin','hashcat'),getattr(args,'default_limit',1000000),optimized_kernels)
     choose_arm.context=ctx
+    for _arm in arms:
+        starter=getattr(_arm, 'start', None)
+        if callable(starter): starter(ctx)
     alpha=float(args.alpha if args.alpha is not None else cfg.get('alpha',0.2)); epsilon=float(args.epsilon if args.epsilon is not None else cfg.get('epsilon',0.1))
     rng=random.Random(args.random_seed if args.random_seed is not None else cfg.get('random_seed',0))
     warmup=[a.name for a in arms if getattr(a, 'warmup_eligible', True)]
@@ -294,89 +302,94 @@ def run_scheduler(args) -> int:
     console_mode = 'quiet' if getattr(args, 'quiet', False) else ('verbose' if getattr(args, 'verbose', False) else 'default')
     attempted_jobs = 0
     skipped_this_completed_slice = set()
-    while completed_slices < total_slices:
-        job = completed_slices + 1
-        choose_arm.skip_once = skipped_this_completed_slice
-        arm,reason=choose_arm(arms,args.schedule,warmup if args.schedule=='adaptive' else [],epsilon,rng,current_adaptive_slice)
-        if arm is None:
+    try:
+        while completed_slices < total_slices:
+            job = completed_slices + 1
+            choose_arm.skip_once = skipped_this_completed_slice
+            arm,reason=choose_arm(arms,args.schedule,warmup if args.schedule=='adaptive' else [],epsilon,rng,current_adaptive_slice)
+            if arm is None:
+                if console_mode == 'verbose':
+                    for unavailable in getattr(choose_arm, 'unavailable', []):
+                        print('Unavailable arm: '+json.dumps(unavailable,separators=(',',':')), flush=True)
+                break
+            attempted_jobs += 1
+            phase='warmup' if reason=='warmup' else 'adaptive'
+            use_arm_local = phase == 'warmup' and warmup_scoring == 'arm_local'
+            arm_local_potfile = None
+            if use_arm_local:
+                arm_local_potfile = os.path.join(warmup_potfiles_dir, f'{_safe_potfile_stem(arm.name)}.potfile')
+                _copy_potfile_baseline(warmup_baseline_potfile, arm_local_potfile)
+                ctx.potfile_path_override = arm_local_potfile
+            else:
+                ctx.potfile_path_override = None
+            score_before=arm.score; t0=time.time(); res=arm.run_slice(ctx); res.runtime_seconds=max(0.0,time.time()-t0)
+            ctx.potfile_path_override = None
+            if not res.executed:
+                skipped_this_completed_slice.add(arm.name)
+                if console_mode == 'verbose':
+                    print('[skip] '+json.dumps({'arm': arm.name, 'reason': res.execution_status, **getattr(arm, 'last_availability', {}), **res.extra}, separators=(',', ':')), flush=True)
+                continue
+            arm_local_cracks = arm_local_new_cracks = duplicate_cracks_vs_shared = 0
+            if use_arm_local:
+                arm_local_after = pot_values(arm_local_potfile)
+                arm_local_new_pairs=[(h,v) for h,v in arm_local_after.items() if h not in warmup_baseline]
+                arm_local_cracks=len(arm_local_after)
+                arm_local_new_cracks=len(arm_local_new_pairs)
+                shared_before=pot_values(potfile)
+                new_pairs=[(h,v) for h,v in arm_local_new_pairs if h not in shared_before]
+                duplicate_cracks_vs_shared=arm_local_new_cracks-len(new_pairs)
+                _append_potfile_pairs(potfile, new_pairs)
+                after=pot_values(potfile); prev=after
+            else:
+                after=pot_values(potfile); new_pairs=[(h,v) for h,v in after.items() if h not in prev]; prev=after
+            discoveries=[v for _,v in new_pairs]
+            feedback_expansion_metrics = {}
+            for a in arms:
+                expansion = a.on_new_discoveries(discoveries, ctx)
+                if discoveries and expansion:
+                    feedback_expansion_metrics[a.name] = expansion
+                    if (console_mode == 'verbose' or a.config.get('debug_expansions')) and expansion.get('parent_debug_expansions'):
+                        for debug_record in expansion.get('parent_debug_expansions', []):
+                            print('Feedback expansion: '+json.dumps({'arm': a.name, **debug_record}, separators=(',', ':')), flush=True)
+            valid_work = bool(res.valid_work and res.extra.get('feedback_valid_work', True))
+            marginal=len(new_pairs)
+            reward_count = arm_local_new_cracks if use_arm_local else marginal
+            reward=(reward_count/res.runtime_seconds) if res.runtime_seconds>0 and valid_work else 0.0
+            if valid_work:
+                arm.score=arm.score+alpha*(reward-arm.score)
+            arm.runs+=1; arm.total_runtime+=res.runtime_seconds; arm.total_new_cracks+=marginal
+            if args.schedule=='adaptive' and reason!='warmup' and valid_work:
+                arm.last_run_adaptive_slice=current_adaptive_slice; current_adaptive_slice+=1
+            n=arm.config.get('force_every_slices'); since=(current_adaptive_slice-arm.last_run_adaptive_slice) if n else None
+            availability_fields = {k: v for k, v in getattr(arm, 'last_availability', {}).items() if k != 'available'}
+            optimized_hint = _optimized_kernel_failure_hint(ctx.hashcat_optimized_kernels, res.exit_code, res.stdout, res.stderr)
             if console_mode == 'verbose':
                 for unavailable in getattr(choose_arm, 'unavailable', []):
                     print('Unavailable arm: '+json.dumps(unavailable,separators=(',',':')), flush=True)
-            break
-        attempted_jobs += 1
-        phase='warmup' if reason=='warmup' else 'adaptive'
-        use_arm_local = phase == 'warmup' and warmup_scoring == 'arm_local'
-        arm_local_potfile = None
-        if use_arm_local:
-            arm_local_potfile = os.path.join(warmup_potfiles_dir, f'{_safe_potfile_stem(arm.name)}.potfile')
-            _copy_potfile_baseline(warmup_baseline_potfile, arm_local_potfile)
-            ctx.potfile_path_override = arm_local_potfile
-        else:
-            ctx.potfile_path_override = None
-        score_before=arm.score; t0=time.time(); res=arm.run_slice(ctx); res.runtime_seconds=max(0.0,time.time()-t0)
-        ctx.potfile_path_override = None
-        if not res.executed:
-            skipped_this_completed_slice.add(arm.name)
-            if console_mode == 'verbose':
-                print('[skip] '+json.dumps({'arm': arm.name, 'reason': res.execution_status, **getattr(arm, 'last_availability', {}), **res.extra}, separators=(',', ':')), flush=True)
-            continue
-        arm_local_cracks = arm_local_new_cracks = duplicate_cracks_vs_shared = 0
-        if use_arm_local:
-            arm_local_after = pot_values(arm_local_potfile)
-            arm_local_new_pairs=[(h,v) for h,v in arm_local_after.items() if h not in warmup_baseline]
-            arm_local_cracks=len(arm_local_after)
-            arm_local_new_cracks=len(arm_local_new_pairs)
-            shared_before=pot_values(potfile)
-            new_pairs=[(h,v) for h,v in arm_local_new_pairs if h not in shared_before]
-            duplicate_cracks_vs_shared=arm_local_new_cracks-len(new_pairs)
-            _append_potfile_pairs(potfile, new_pairs)
-            after=pot_values(potfile); prev=after
-        else:
-            after=pot_values(potfile); new_pairs=[(h,v) for h,v in after.items() if h not in prev]; prev=after
-        discoveries=[v for _,v in new_pairs]
-        feedback_expansion_metrics = {}
-        for a in arms:
-            expansion = a.on_new_discoveries(discoveries, ctx)
-            if discoveries and expansion:
-                feedback_expansion_metrics[a.name] = expansion
-                if (console_mode == 'verbose' or a.config.get('debug_expansions')) and expansion.get('parent_debug_expansions'):
-                    for debug_record in expansion.get('parent_debug_expansions', []):
-                        print('Feedback expansion: '+json.dumps({'arm': a.name, **debug_record}, separators=(',', ':')), flush=True)
-        valid_work = bool(res.valid_work and res.extra.get('feedback_valid_work', True))
-        marginal=len(new_pairs)
-        reward_count = arm_local_new_cracks if use_arm_local else marginal
-        reward=(reward_count/res.runtime_seconds) if res.runtime_seconds>0 and valid_work else 0.0
-        if valid_work:
-            arm.score=arm.score+alpha*(reward-arm.score)
-        arm.runs+=1; arm.total_runtime+=res.runtime_seconds; arm.total_new_cracks+=marginal
-        if args.schedule=='adaptive' and reason!='warmup' and valid_work:
-            arm.last_run_adaptive_slice=current_adaptive_slice; current_adaptive_slice+=1
-        n=arm.config.get('force_every_slices'); since=(current_adaptive_slice-arm.last_run_adaptive_slice) if n else None
-        availability_fields = {k: v for k, v in getattr(arm, 'last_availability', {}).items() if k != 'available'}
-        optimized_hint = _optimized_kernel_failure_hint(ctx.hashcat_optimized_kernels, res.exit_code, res.stdout, res.stderr)
-        if console_mode == 'verbose':
-            for unavailable in getattr(choose_arm, 'unavailable', []):
-                print('Unavailable arm: '+json.dumps(unavailable,separators=(',',':')), flush=True)
-        rec={'timestamp':utc_now(),'job_id':job,'phase':phase,'arm':arm.name,'attack_type':arm.type,'selection_reason':reason,
-             'skip_before':res.skip_before,'next_skip_after':res.next_skip_after,'runtime_seconds':res.runtime_seconds,
-             'exit_code':res.exit_code,'exit_meaning':EXIT_MEANINGS.get(res.exit_code,'error'),'execution_status':res.execution_status,'valid_work':valid_work,'progress_source':res.progress_source,
-             'hashcat_optimized_kernels':ctx.hashcat_optimized_kernels,'hashcat_optimized_kernel_hint':optimized_hint,
-             'dictionary_candidate_cursor':res.dictionary_candidate_cursor,'new_cracks':marginal,'marginal_new_cracks':marginal,'shared_new_cracks':marginal,
-             'warmup_scoring':warmup_scoring if phase == 'warmup' else 'shared_marginal',
-             'potfile_scope':'arm_local' if use_arm_local else 'shared',
-             'arm_local_cracks':arm_local_cracks if phase == 'warmup' else None,
-             'arm_local_new_cracks':arm_local_new_cracks if phase == 'warmup' else None,
-             'duplicate_cracks_vs_shared':duplicate_cracks_vs_shared if phase == 'warmup' else None,
-             'reward_used_for_score':reward,
-             'total_cracks':len(after),'reward':reward,'score_before':score_before,'score_after':arm.score,'exhausted':arm.exhausted,
-             'forced_cadence_interval':n,'slices_since_last_run':since,'overdue_ratio':(since/n if n and since is not None else None),
-             'unavailable_arms':getattr(choose_arm, 'unavailable', []) if console_mode == 'verbose' else None,
-             'feedback_expansion_metrics':feedback_expansion_metrics or None, **availability_fields, **res.extra}
-        with open(jobs_path,'a',encoding='utf-8') as f: f.write(json.dumps(rec,separators=(',',':'))+'\n')
-        with open(os.path.join(args.out_dir,'hashcat_logs',f'job_{job:06d}.log'),'w',encoding='utf-8') as f: f.write(res.stdout+'\n'+res.stderr)
-        completed_slices += 1
-        skipped_this_completed_slice = set()
-        print_slice_progress(rec, total_slices, console_mode)
+            rec={'timestamp':utc_now(),'job_id':job,'phase':phase,'arm':arm.name,'attack_type':arm.type,'selection_reason':reason,
+                 'skip_before':res.skip_before,'next_skip_after':res.next_skip_after,'runtime_seconds':res.runtime_seconds,
+                 'exit_code':res.exit_code,'exit_meaning':EXIT_MEANINGS.get(res.exit_code,'error'),'execution_status':res.execution_status,'valid_work':valid_work,'progress_source':res.progress_source,
+                 'hashcat_optimized_kernels':ctx.hashcat_optimized_kernels,'hashcat_optimized_kernel_hint':optimized_hint,
+                 'dictionary_candidate_cursor':res.dictionary_candidate_cursor,'new_cracks':marginal,'marginal_new_cracks':marginal,'shared_new_cracks':marginal,
+                 'warmup_scoring':warmup_scoring if phase == 'warmup' else 'shared_marginal',
+                 'potfile_scope':'arm_local' if use_arm_local else 'shared',
+                 'arm_local_cracks':arm_local_cracks if phase == 'warmup' else None,
+                 'arm_local_new_cracks':arm_local_new_cracks if phase == 'warmup' else None,
+                 'duplicate_cracks_vs_shared':duplicate_cracks_vs_shared if phase == 'warmup' else None,
+                 'reward_used_for_score':reward,
+                 'total_cracks':len(after),'reward':reward,'score_before':score_before,'score_after':arm.score,'exhausted':arm.exhausted,
+                 'forced_cadence_interval':n,'slices_since_last_run':since,'overdue_ratio':(since/n if n and since is not None else None),
+                 'unavailable_arms':getattr(choose_arm, 'unavailable', []) if console_mode == 'verbose' else None,
+                 'feedback_expansion_metrics':feedback_expansion_metrics or None, **availability_fields, **res.extra}
+            with open(jobs_path,'a',encoding='utf-8') as f: f.write(json.dumps(rec,separators=(',',':'))+'\n')
+            with open(os.path.join(args.out_dir,'hashcat_logs',f'job_{job:06d}.log'),'w',encoding='utf-8') as f: f.write(res.stdout+'\n'+res.stderr)
+            completed_slices += 1
+            skipped_this_completed_slice = set()
+            print_slice_progress(rec, total_slices, console_mode)
+    finally:
+        for _arm in arms:
+            cleaner=getattr(_arm, 'cleanup', None)
+            if callable(cleaner): cleaner()
     final_discoveries = len(prev)
     print(format_final_summary(completed_slices, final_discoveries, time.time() - start_time, arms, jobs_path), flush=True)
     return 0
