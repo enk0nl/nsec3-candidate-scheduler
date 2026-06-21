@@ -8,7 +8,7 @@ from adaptive_hashcat_scheduler.feedback.common_affixes import is_feedback_affix
 from adaptive_hashcat_scheduler.feedback.normalize import normalize_dns_name
 from adaptive_hashcat_scheduler.feedback.queue import FeedbackQueueState
 from adaptive_hashcat_scheduler.hashcat.potfile import iter_potfile_cracks
-from adaptive_hashcat_scheduler.hashcat.runner import build_hashcat_command, run_cmd
+from adaptive_hashcat_scheduler.feedback.execution import run_feedback_dictionary_slice
 
 
 def _load_affixes(path: str, limit: int) -> list[str]:
@@ -34,6 +34,7 @@ def _load_affixes(path: str, limit: int) -> list[str]:
 class StaticAffixFeedbackArm(Arm):
     def __init__(self, name: str, arm_type: str, config: dict[str, Any]):
         super().__init__(name=name, type=arm_type, config=config)
+        self.warmup_eligible = False
         self.prefixes = _load_affixes(config['prefixes'], int(config.get('top_prefixes', 50)))
         self.suffixes = _load_affixes(config['suffixes'], int(config.get('top_suffixes', 50)))
         self.queue_state: FeedbackQueueState | None = None
@@ -57,20 +58,12 @@ class StaticAffixFeedbackArm(Arm):
         }
 
     def is_available(self, context) -> bool:
-        return (not self.exhausted) and self._queue(context).queue_has_items()
+        q = self._queue(context)
+        return (not self.exhausted) and (q.queue_has_items() or q.active_slice_is_active())
 
     def run_slice(self, context) -> SliceResult:
-        q = self._queue(context)
-        before = q.queue_size_lines()
-        slice_file, written, after = q.move_queue_to_slice_file()
-        cmd = build_hashcat_command(context.hashcat_bin, context.hash_mode, 0, context.slice_seconds,
-                                    context.potfile, context.hashes, candidate=slice_file, optimized_kernels=context.hashcat_optimized_kernels)
-        rc, out, err = run_cmd(cmd)
-        return SliceResult(exit_code=rc, stdout=out, stderr=err, extra={
+        return run_feedback_dictionary_slice(self, context, {
             'base_mode': self.config.get('base_mode', 'full'),
-            'queue_size_before_slice': before,
-            'candidates_written_to_slice': written,
-            'queue_size_after_slice': after,
             **self.last_expansion,
         })
 

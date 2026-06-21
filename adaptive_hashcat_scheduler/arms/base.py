@@ -28,6 +28,7 @@ class Arm:
     total_new_cracks: int = 0
     next_skip: int = 0
     keyspace: int | None = None
+    warmup_eligible: bool = True
 
     def is_available(self, context: Any) -> bool:
         return not self.exhausted

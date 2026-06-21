@@ -9,8 +9,7 @@ from typing import Any, Iterable
 from adaptive_hashcat_scheduler.arms.base import Arm, SliceResult
 from adaptive_hashcat_scheduler.feedback.normalize import normalize_dns_name
 from adaptive_hashcat_scheduler.feedback.queue import FeedbackQueueState
-from adaptive_hashcat_scheduler.hashcat.runner import build_hashcat_command, run_cmd
-from adaptive_hashcat_scheduler.hashcat.status import latest_summary
+from adaptive_hashcat_scheduler.feedback.execution import run_feedback_dictionary_slice
 
 _PATTERNS = [
     re.compile(r'^([a-z]+)([-_])([0-9]+)$'),
@@ -26,6 +25,7 @@ class PermutationArm(Arm):
     def __init__(self, name: str, arm_type: str, config: dict[str, Any]):
         super().__init__(name=name, type=arm_type, config=config)
         self.queue_state: FeedbackQueueState | None = None
+        self.warmup_eligible = False
         self.last_expansion = self._empty_metrics()
 
     def _numeric_config(self) -> dict[str, Any]:
@@ -102,33 +102,16 @@ class PermutationArm(Arm):
         }
 
     def is_available(self, context) -> bool:
-        return (not self.exhausted) and self._queue(context).queue_has_items()
+        q = self._queue(context)
+        return (not self.exhausted) and (q.queue_has_items() or q.active_slice_is_active() or self.pending_virtual_stream_count(context) > 0)
 
     def pending_virtual_stream_count(self, context) -> int:
         cursor = self._read_cursor(context)
         return int(cursor.get('pending_numeric_streams', 0) or 0) + int(cursor.get('pending_alpha_streams', 0) or 0)
 
     def run_slice(self, context) -> SliceResult:
-        q = self._queue(context)
-        before = q.queue_size_lines()
-        slice_file, written, _ = q.write_queue_to_slice_file()
         cursor = self._read_cursor(context)
-        cmd = build_hashcat_command(context.hashcat_bin, context.hash_mode, 0, context.slice_seconds,
-                                    context.potfile, context.hashes, candidate=slice_file, optimized_kernels=context.hashcat_optimized_kernels)
-        rc, out, err = run_cmd(cmd)
-        summ = latest_summary(out + '\n' + err)
-        processed = 0
-        progress = summ.get('restore_point')
-        if isinstance(progress, int) and progress > 0:
-            processed = min(progress, before)
-        elif rc == 1:
-            processed = before
-        after = q.discard_queue_prefix(processed)
-        return SliceResult(exit_code=rc, stdout=out, stderr=err, extra={
-            'queue_size_before_slice': before,
-            'candidates_written_to_slice': written,
-            'queue_size_after_slice': after,
-            'permutation_cursor_processed': processed,
+        return run_feedback_dictionary_slice(self, context, {
             **self.last_expansion,
             'pending_numeric_streams': cursor.get('pending_numeric_streams', 0),
             'pending_alpha_streams': cursor.get('pending_alpha_streams', 0),

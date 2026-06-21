@@ -52,7 +52,8 @@ def _feedback_availability(arm, context, current_adaptive_slice, force_queue: bo
     min_queue_size = int(arm.config.get('min_queue_size', 1))
     min_slices = int(arm.config.get('min_slices_between_runs', 0))
     slices_since = current_adaptive_slice - arm.last_run_adaptive_slice
-    runnable = queue_size > 0 or pending_virtual_streams > 0
+    active_slice = arm._queue(context).active_slice_is_active()
+    runnable = active_slice or queue_size > 0 or pending_virtual_streams > 0
     reason = None
     if arm.exhausted:
         reason = 'exhausted'
@@ -60,7 +61,7 @@ def _feedback_availability(arm, context, current_adaptive_slice, force_queue: bo
         reason = 'cooldown'
     elif not runnable:
         reason = 'forced_cadence_empty_queue' if force_queue else 'empty_queue'
-    elif queue_size < min_queue_size and pending_virtual_streams == 0 and not force_queue:
+    elif queue_size < min_queue_size and pending_virtual_streams == 0 and not active_slice and not force_queue:
         reason = 'queue_below_minimum'
     return {
         'available': reason is None,
@@ -70,6 +71,7 @@ def _feedback_availability(arm, context, current_adaptive_slice, force_queue: bo
         'min_queue_size': min_queue_size,
         'queue_size': queue_size,
         'pending_virtual_streams': pending_virtual_streams,
+        'active_slice': active_slice,
         'cooldown_satisfied': slices_since >= min_slices,
         'runnable': runnable,
     }
@@ -153,7 +155,15 @@ def format_slice_oneline(rec: dict[str, Any], total_slices: int) -> str:
         )
     elif rec.get('queue_size_before_slice') is not None:
         before, after, written, enqueued = _feedback_queue_fields(rec)
+        slice_detail = ""
+        if rec.get('active_slice_total_candidates') is not None:
+            slice_detail = (
+                f" slice={rec.get('active_slice_skip_before')}->"
+                f"{rec.get('active_slice_next_skip_after')}/"
+                f"{rec.get('active_slice_total_candidates')}"
+            )
         details = (f" queue={before}->{after} written={written} enq={enqueued}"
+                   f"{slice_detail}"
                    f" gate_queue={rec.get('queue_size')}/{rec.get('min_queue_size')}"
                    f" cooldown={rec.get('slices_since_last_run')}/{rec.get('min_slices_between_runs')}")
     return (
@@ -184,6 +194,11 @@ def format_slice_verbose(rec: dict[str, Any], total_slices: int) -> str:
             f"Queue gate: {rec.get('queue_size')} / {rec.get('min_queue_size')}",
             f"Cooldown: {rec.get('slices_since_last_run')} / {rec.get('min_slices_between_runs')}",
         ])
+        if rec.get('active_slice_total_candidates') is not None:
+            lines.extend([
+                f"Active slice: {rec.get('active_slice_file')}",
+                f"Active slice skip: {rec.get('active_slice_skip_before')} -> {rec.get('active_slice_next_skip_after')} / {rec.get('active_slice_total_candidates')}",
+            ])
     lines.extend([
         f"New discoveries: {rec['new_cracks']}",
         f"Total discoveries: {rec['total_cracks']}",
@@ -229,7 +244,7 @@ def run_scheduler(args) -> int:
     choose_arm.context=ctx
     alpha=float(args.alpha if args.alpha is not None else cfg.get('alpha',0.2)); epsilon=float(args.epsilon if args.epsilon is not None else cfg.get('epsilon',0.1))
     rng=random.Random(args.random_seed if args.random_seed is not None else cfg.get('random_seed',0))
-    warmup=[a.name for a in arms]
+    warmup=[a.name for a in arms if getattr(a, 'warmup_eligible', True)]
     prev=pot_values(potfile); current_adaptive_slice=0
     total_slices=args.total_slices or 0
     completed_slices = 0
@@ -246,10 +261,12 @@ def run_scheduler(args) -> int:
         after=pot_values(potfile); new_pairs=[(h,v) for h,v in after.items() if h not in prev]; prev=after
         discoveries=[v for _,v in new_pairs]
         for a in arms: a.on_new_discoveries(discoveries, ctx)
-        marginal=len(new_pairs); reward=(marginal/res.runtime_seconds) if res.runtime_seconds>0 else 0.0
-        arm.score=arm.score+alpha*(reward-arm.score); arm.runs+=1; arm.total_runtime+=res.runtime_seconds; arm.total_new_cracks+=marginal
+        valid_work = bool(res.extra.get('feedback_valid_work', True))
+        marginal=len(new_pairs); reward=(marginal/res.runtime_seconds) if res.runtime_seconds>0 and valid_work else 0.0
+        if valid_work:
+            arm.score=arm.score+alpha*(reward-arm.score); arm.runs+=1; arm.total_runtime+=res.runtime_seconds; arm.total_new_cracks+=marginal
         phase='warmup' if reason=='warmup' else 'adaptive'
-        if args.schedule=='adaptive' and reason!='warmup':
+        if args.schedule=='adaptive' and reason!='warmup' and valid_work:
             arm.last_run_adaptive_slice=current_adaptive_slice; current_adaptive_slice+=1
         n=arm.config.get('force_every_slices'); since=(current_adaptive_slice-arm.last_run_adaptive_slice) if n else None
         availability_fields = {k: v for k, v in getattr(arm, 'last_availability', {}).items() if k != 'available'}
