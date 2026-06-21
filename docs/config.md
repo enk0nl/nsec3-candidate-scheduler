@@ -17,3 +17,9 @@ Feedback runtime state is written under:
 ```
 
 For example, feedback arms use `feedback/<arm>/queue.txt` and `feedback/<arm>/generated_candidates.txt`. The `generated_candidates.txt` file is a generated-candidate dedupe ledger; it is not tested, cracked, or validated history.
+
+## Model-dependent feedback arms
+
+This repository does not currently include model files under `models/`. Predictive feedback arms require trained adjacent-label pair models, and static-affix feedback arms require mined prefix/suffix files generated from your own data. The example config documents the available settings but keeps these model-dependent arms disabled by default; replace the `/path/to/...` placeholders before enabling them. Release packages may include real models later.
+
+Use the provided predictive training command to create prefix/suffix pair TSV files from a potfile or cracked-name list. Static affix prefix/suffix files should be mined from your own corpus until packaged release models are available.

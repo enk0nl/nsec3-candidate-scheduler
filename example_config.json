@@ -1,7 +1,7 @@
 {
   "random_seed": 1337,
   "alpha": 0.15,
-  "epsilon": 0.10,
+  "epsilon": 0.1,
   "warmup": {
     "scoring": "arm_local"
   },
@@ -38,11 +38,11 @@
     {
       "name": "predictive-prefix",
       "type": "predictive_prefix",
-      "enabled": true,
-      "model": "models/prefix_pairs.tsv",
+      "enabled": false,
+      "model": "/path/to/prefix_pairs.tsv",
       "base_mode": "full",
       "prediction_source": "leftmost",
-      "min_sim": 0.70,
+      "min_sim": 0.7,
       "tau": 2.0,
       "gamma": 0.0,
       "score_floor": -5.0,
@@ -59,11 +59,11 @@
     {
       "name": "predictive-suffix",
       "type": "predictive_suffix",
-      "enabled": true,
-      "model": "models/suffix_pairs.tsv",
+      "enabled": false,
+      "model": "/path/to/suffix_pairs.tsv",
       "base_mode": "full",
       "prediction_source": "leftmost",
-      "min_sim": 0.70,
+      "min_sim": 0.7,
       "tau": 2.0,
       "gamma": 0.0,
       "score_floor": -5.0,
@@ -113,9 +113,9 @@
     {
       "name": "static-affix-top50",
       "type": "static_affix_feedback",
-      "enabled": true,
-      "prefixes": "models/common_prefixes_top50.txt",
-      "suffixes": "models/common_suffixes_top50.txt",
+      "enabled": false,
+      "prefixes": "/path/to/common_prefixes_top50.txt",
+      "suffixes": "/path/to/common_suffixes_top50.txt",
       "top_prefixes": 50,
       "top_suffixes": 50,
       "generate_prefixes": true,

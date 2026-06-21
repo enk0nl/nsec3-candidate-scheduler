@@ -89,7 +89,7 @@ Optional per-arm forced cadence can be configured with `"force_every_slices": N`
 
 ## Example config
 
-See the canonical example at `example_config.json`. It is valid JSON and includes every supported arm type and major scheduler/feedback setting. See `docs/config.md` for concise configuration notes.
+See the canonical example at `example_config.json`. It is valid JSON and includes every supported arm type and major scheduler/feedback setting. See `docs/config.md` for concise configuration notes. Model-dependent predictive and static-affix arms are disabled by default because this repository does not currently bundle model files; replace the `/path/to/...` placeholders before enabling them.
 
 ## Example command
 
@@ -152,8 +152,8 @@ Train both directional adjacent-label models from a hashcat potfile or a plain c
 python3 -m adaptive_hashcat_scheduler train-predictive-feedback \
   --input /path/to/training.pot \
   --input-format auto \
-  --output-prefix-model models/prefix_pairs.tsv \
-  --output-suffix-model models/suffix_pairs.tsv
+  --output-prefix-model /path/to/prefix_pairs.tsv \
+  --output-suffix-model /path/to/suffix_pairs.tsv
 ```
 
 Potfile parsing uses the final colon-separated field as the cracked DNS value, which is required for NSEC3 hashcat mode 8300 potfiles.

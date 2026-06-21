@@ -1,2 +1,0 @@
-dev	100
-staging	80
