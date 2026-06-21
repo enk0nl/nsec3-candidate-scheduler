@@ -60,6 +60,13 @@ def _validate_permutation(arm: dict[str, Any]) -> None:
 def load_config(path: str) -> dict[str, Any]:
     with open(path,'r',encoding='utf-8') as f: cfg=json.load(f)
     base=Path(path).parent
+    warmup_cfg = cfg.get('warmup') or {}
+    if not isinstance(warmup_cfg, dict):
+        raise ValueError('warmup config must be an object')
+    scoring = warmup_cfg.get('scoring', 'arm_local')
+    if scoring not in {'arm_local', 'shared_marginal'}:
+        raise ValueError('warmup.scoring must be arm_local or shared_marginal')
+    cfg['warmup'] = {**warmup_cfg, 'scoring': scoring}
     hashcat_cfg = cfg.get('hashcat') or {}
     if not isinstance(hashcat_cfg, dict):
         raise ValueError('hashcat config must be an object')

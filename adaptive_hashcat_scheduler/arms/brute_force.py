@@ -224,6 +224,7 @@ class BruteForceArm(Arm):
             context.potfile, context.hashes, candidate=mask, skip=skip_before,
             limit=limit, extra_args=[*self.charset_args(), '--session', self._session_name(mask_index)],
             optimized_kernels=context.hashcat_optimized_kernels,
+            potfile_path_override=getattr(context, 'potfile_path_override', None),
         )
         rc, out, err = run_cmd(cmd)
         runtime_reached = rc == 4
