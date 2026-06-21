@@ -104,6 +104,10 @@ class PermutationArm(Arm):
     def is_available(self, context) -> bool:
         return (not self.exhausted) and self._queue(context).queue_has_items()
 
+    def pending_virtual_stream_count(self, context) -> int:
+        cursor = self._read_cursor(context)
+        return int(cursor.get('pending_numeric_streams', 0) or 0) + int(cursor.get('pending_alpha_streams', 0) or 0)
+
     def run_slice(self, context) -> SliceResult:
         q = self._queue(context)
         before = q.queue_size_lines()

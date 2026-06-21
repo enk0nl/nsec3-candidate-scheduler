@@ -35,17 +35,30 @@ def make_arm(cfg):
     if t=='permutation': return PermutationArm(name,t,cfg)
     raise ValueError(f'unknown arm type: {t}')
 
+def _feedback_pending_virtual_streams(arm, context) -> int:
+    counter = getattr(arm, 'pending_virtual_stream_count', None)
+    if callable(counter):
+        try:
+            return max(0, int(counter(context)))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
 def _feedback_availability(arm, context, current_adaptive_slice, force_queue: bool = False) -> dict[str, Any]:
     queue_size = arm._queue(context).queue_size_lines()
+    pending_virtual_streams = _feedback_pending_virtual_streams(arm, context)
     min_queue_size = int(arm.config.get('min_queue_size', 1))
     min_slices = int(arm.config.get('min_slices_between_runs', 0))
     slices_since = current_adaptive_slice - arm.last_run_adaptive_slice
+    runnable = queue_size > 0 or pending_virtual_streams > 0
     reason = None
     if arm.exhausted:
         reason = 'exhausted'
     elif slices_since < min_slices:
         reason = 'cooldown'
-    elif queue_size < min_queue_size and not force_queue:
+    elif not runnable:
+        reason = 'forced_cadence_empty_queue' if force_queue else 'empty_queue'
+    elif queue_size < min_queue_size and pending_virtual_streams == 0 and not force_queue:
         reason = 'queue_below_minimum'
     return {
         'available': reason is None,
@@ -54,6 +67,9 @@ def _feedback_availability(arm, context, current_adaptive_slice, force_queue: bo
         'slices_since_last_run': slices_since,
         'min_queue_size': min_queue_size,
         'queue_size': queue_size,
+        'pending_virtual_streams': pending_virtual_streams,
+        'cooldown_satisfied': slices_since >= min_slices,
+        'runnable': runnable,
     }
 
 def _availability(arm, context, current_adaptive_slice, force_queue: bool = False) -> dict[str, Any]:
@@ -92,7 +108,7 @@ def choose_arm(arms, schedule, warmup, epsilon, rng, current_adaptive_slice):
             a.last_availability = info
             due.append((since/n,a.runs,a.total_runtime,a.name,a))
         elif info.get('availability_reason'):
-            forced_skip = {'arm': a.name, 'forced_cadence_due': True, **info}
+            forced_skip = {'arm': a.name, 'forced_due': True, 'forced_cadence_due': True, **info}
             choose_arm.unavailable.append(forced_skip)
     if due: return sorted(due,key=lambda x:(-x[0],x[1],x[2],x[3]))[0][4],'forced_cadence'
     live=normal
