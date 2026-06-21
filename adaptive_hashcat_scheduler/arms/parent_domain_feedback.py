@@ -29,7 +29,7 @@ class ParentDomainFeedbackArm(Arm):
             'parent_candidates_generated': 0,
             'parent_candidates_enqueued': 0,
             'parent_duplicates_skipped': 0,
-            'parent_duplicates_seen_candidates': 0,
+            'parent_duplicates_generated': 0,
             'parent_duplicates_queued': 0,
             'parent_duplicates_already_cracked': 0,
             'parent_rejected_candidates': 0,
@@ -74,8 +74,8 @@ class ParentDomainFeedbackArm(Arm):
 
     def on_new_discoveries(self, discoveries, context) -> dict[str, Any]:
         q = self._queue(context)
-        seen = q.load_seen_candidates()
-        queued = q._load_set(q.queue_path)
+        generated = q.load_generated_candidates()
+        queued = set(q.load_queue())
         expanded = q.load_expanded_bases()
         cracked = {normalize_dns_name(value) for _, value in iter_potfile_cracks(context.potfile)}
         cracked.discard(None)
@@ -100,7 +100,7 @@ class ParentDomainFeedbackArm(Arm):
                 'generated_parents': [],
                 'enqueued': [],
                 'skipped_already_cracked': [],
-                'skipped_seen': [],
+                'skipped_generated': [],
                 'skipped_queued': [],
                 'rejected': [],
             }
@@ -126,12 +126,12 @@ class ParentDomainFeedbackArm(Arm):
                     metrics['parent_duplicates_skipped'] += 1
                     record['skipped_queued'].append(cand)
                     continue
-                if cand in seen:
-                    metrics['parent_duplicates_seen_candidates'] += 1
+                if cand in generated:
+                    metrics['parent_duplicates_generated'] += 1
                     metrics['parent_duplicates_skipped'] += 1
-                    record['skipped_seen'].append(cand)
+                    record['skipped_generated'].append(cand)
                     continue
-                seen.add(cand)
+                generated.add(cand)
                 queued.add(cand)
                 to_enqueue.append(cand)
                 record['enqueued'].append(cand)

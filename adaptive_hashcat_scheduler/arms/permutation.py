@@ -12,6 +12,7 @@ from adaptive_hashcat_scheduler.feedback.queue import FeedbackQueueState
 from adaptive_hashcat_scheduler.feedback.execution import run_feedback_dictionary_slice
 
 _PATTERNS = [
+    re.compile(r'^([a-z][a-z-]*[a-z])([-_])([0-9]+)$'),
     re.compile(r'^([a-z]+)([-_])([0-9]+)$'),
     re.compile(r'^([a-z]+)([0-9]+)$'),
     re.compile(r'^([0-9]+)([-_])([a-z]+)$'),
@@ -67,7 +68,10 @@ class PermutationArm(Arm):
         return self.queue_state
 
     def _cursor_path(self, context) -> Path:
-        return Path(context.out_dir) / f'{self.name.replace("/", "_")}_cursor.json'
+        if self.queue_state is not None and str(self.queue_state.out_dir) == context.out_dir:
+            return self.queue_state.root / 'cursor.json'
+        from adaptive_hashcat_scheduler.feedback.queue import safe_arm_name
+        return Path(context.out_dir) / 'feedback' / safe_arm_name(self.name) / 'cursor.json'
 
     def _read_cursor(self, context) -> dict[str, Any]:
         path = self._cursor_path(context)
@@ -123,21 +127,19 @@ class PermutationArm(Arm):
             m = pat.match(label)
             if not m:
                 continue
-            if i == 0:
+            if i in (0, 1):
                 alpha, sep, num = m.group(1), m.group(2), m.group(3)
                 alpha_pos, num_pos = 'prefix', 'suffix'
-            elif i == 1:
+            elif i == 2:
                 alpha, sep, num = m.group(1), '', m.group(2)
                 alpha_pos, num_pos = 'prefix', 'suffix'
-            elif i == 2:
+            elif i == 3:
                 num, sep, alpha = m.group(1), m.group(2), m.group(3)
                 alpha_pos, num_pos = 'suffix', 'prefix'
             else:
                 num, sep, alpha = m.group(1), '', m.group(2)
                 alpha_pos, num_pos = 'suffix', 'prefix'
             if not (int(ncfg['min_width']) <= len(num) <= int(ncfg['max_width'])):
-                return None
-            if not (int(acfg['min_width']) <= len(alpha) <= int(acfg['max_width'])):
                 return None
             return {
                 'original_label': label, 'label_index': label_index,
@@ -271,6 +273,8 @@ class PermutationArm(Arm):
             return
         if acfg.get('require_numeric_context', True) and match.get('numeric_value') is None:
             return
+        if not (int(acfg['min_width']) <= int(match['alpha_width']) <= int(acfg['max_width'])):
+            return
         charset = str(acfg.get('charset', ''))
         for w in self._alpha_widths(int(match['alpha_width']), acfg):
             for chars in itertools.product(charset, repeat=w):
@@ -279,7 +283,8 @@ class PermutationArm(Arm):
 
     def on_new_discoveries(self, discoveries, context) -> dict[str, Any]:
         q = self._queue(context)
-        seen = q.load_seen_candidates()
+        generated = q.load_generated_candidates()
+        queued = set(q.load_queue())
         expanded = q.load_expanded_bases()
         metrics = self._empty_metrics()
         numeric_to_enqueue: list[str] = []
@@ -303,18 +308,18 @@ class PermutationArm(Arm):
                 metrics['permutation_patterns_matched'] += 1
                 for cand in self._numeric_candidates(name, match):
                     metrics['numeric_candidates_generated'] += 1
-                    if cand in seen or cand in expansion_seen:
+                    if cand in generated or cand in queued or cand in expansion_seen:
                         metrics['numeric_duplicates_skipped'] += 1
                         metrics['permutation_duplicates_skipped'] += 1
                         continue
-                    expansion_seen.add(cand); seen.add(cand); numeric_to_enqueue.append(cand)
+                    expansion_seen.add(cand); generated.add(cand); queued.add(cand); numeric_to_enqueue.append(cand)
                 for cand in self._alpha_candidates(name, match):
                     metrics['alpha_candidates_generated'] += 1
-                    if cand in seen or cand in expansion_seen:
+                    if cand in generated or cand in queued or cand in expansion_seen:
                         metrics['alpha_duplicates_skipped'] += 1
                         metrics['permutation_duplicates_skipped'] += 1
                         continue
-                    expansion_seen.add(cand); seen.add(cand); alpha_to_enqueue.append(cand)
+                    expansion_seen.add(cand); generated.add(cand); queued.add(cand); alpha_to_enqueue.append(cand)
                 expanded.add(key); expanded_keys.append(key)
 
         metrics['numeric_candidates_enqueued'] = q.append_candidates(numeric_to_enqueue)

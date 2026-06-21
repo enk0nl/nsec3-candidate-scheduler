@@ -38,7 +38,8 @@ class PredictiveFeedbackArm(Arm):
 
     def on_new_discoveries(self, discoveries, context) -> dict[str, Any]:
         q = self._queue(context)
-        seen = q.load_seen_candidates()
+        generated = q.load_generated_candidates()
+        queued = set(q.load_queue())
         expanded = q.load_expanded_bases()
         to_enqueue, bases = [], []
         metrics = self._empty_metrics()
@@ -61,9 +62,9 @@ class PredictiveFeedbackArm(Arm):
                 cand = normalize_dns_name(cand)
                 if cand is None:
                     metrics['rejected_candidates'] += 1; continue
-                if cand in seen:
+                if cand in generated or cand in queued:
                     metrics['duplicates_skipped'] += 1; continue
-                seen.add(cand); to_enqueue.append(cand)
+                generated.add(cand); queued.add(cand); to_enqueue.append(cand)
             expanded.add(base); bases.append(base); metrics['bases_expanded'] += 1
         metrics['candidates_enqueued'] = q.append_candidates(to_enqueue)
         q.mark_bases_expanded(bases)

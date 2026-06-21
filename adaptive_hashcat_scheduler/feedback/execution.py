@@ -8,7 +8,7 @@ from adaptive_hashcat_scheduler.hashcat.runner import EXIT_MEANINGS, build_hashc
 from adaptive_hashcat_scheduler.hashcat.status import latest_summary
 
 
-def candidate_cursor_from_summary(summary: dict[str, Any], total_candidates: int, skip_before: int) -> tuple[int, str]:
+def candidate_cursor_from_summary(summary: dict[str, Any], total_candidates: int, skip_before: int) -> tuple[int | None, str]:
     cursor = None
     source = 'unknown'
     salts = summary.get('recovered_salts_total')
@@ -21,16 +21,17 @@ def candidate_cursor_from_summary(summary: dict[str, Any], total_candidates: int
         cursor = restore_point
         source = 'restore_point'
     if cursor is None:
-        return skip_before, source
+        return None, source
     return max(0, min(int(cursor), int(total_candidates))), source
 
 
 def run_feedback_dictionary_slice(arm, context, extra: dict[str, Any] | None = None) -> SliceResult:
     q: FeedbackQueueState = arm._queue(context)
     before = q.queue_size_lines()
-    active = q.prepare_active_slice()
+    active = q.prepare_active_slice(arm.config.get('max_candidates_per_slice'))
     if not active.get('active'):
-        return SliceResult(exit_code=1, stdout='', stderr='', exhausted=arm.exhausted, extra={
+        return SliceResult(exit_code=0, stdout='', stderr='', exhausted=arm.exhausted, executed=False, valid_work=False, execution_status='skipped', extra={
+            'feedback_state_dir': str(q.root),
             'queue_size_before_slice': before,
             'candidates_written_to_slice': 0,
             'queue_size_after_slice': before,
@@ -38,12 +39,13 @@ def run_feedback_dictionary_slice(arm, context, extra: dict[str, Any] | None = N
             **(extra or {}),
         })
 
-    slice_file = str(q.out_dir / active['slice_file'])
+    slice_file = str(q.root / active['slice_file'])
     total = int(active.get('total_candidates', 0) or 0)
     skip_before = int(active.get('skip', 0) or 0)
     if total <= 0 or skip_before >= total:
-        q.clear_active_slice(delete_file=True)
-        return SliceResult(exit_code=1, stdout='', stderr='active feedback slice already exhausted; cleared without launching hashcat\n', exhausted=arm.exhausted, extra={
+        q.clear_active_slice()
+        return SliceResult(exit_code=0, stdout='', stderr='active feedback slice already exhausted; cleared without launching hashcat\n', exhausted=arm.exhausted, executed=False, valid_work=False, execution_status='skipped', extra={
+            'feedback_state_dir': str(q.root),
             'active_slice': False,
             'active_slice_file': active.get('slice_file'),
             'active_slice_total_candidates': total,
@@ -75,9 +77,10 @@ def run_feedback_dictionary_slice(arm, context, extra: dict[str, Any] | None = N
     if exit_meaning == 'exhausted':
         next_skip = total
         progress_source = 'exhausted'
-        q.clear_active_slice(delete_file=True)
+        q.clear_active_slice()
     elif exit_meaning == 'runtime_reached':
-        next_skip, progress_source = candidate_cursor_from_summary(summary, total, skip_before)
+        cursor, progress_source = candidate_cursor_from_summary(summary, total, skip_before)
+        next_skip = skip_before if cursor is None else cursor
         if next_skip <= skip_before:
             valid_work = False
             err += '\nwarning: feedback slice reached runtime without measurable candidate progress; preserving active slice skip\n'
@@ -85,7 +88,7 @@ def run_feedback_dictionary_slice(arm, context, extra: dict[str, Any] | None = N
         q.update_active_slice_skip(next_skip)
     else:
         cursor, progress_source = candidate_cursor_from_summary(summary, total, skip_before)
-        if cursor > skip_before:
+        if cursor is not None and cursor > skip_before:
             next_skip = cursor
             q.update_active_slice_skip(next_skip)
         else:
@@ -97,7 +100,9 @@ def run_feedback_dictionary_slice(arm, context, extra: dict[str, Any] | None = N
     remaining_after = max(0, total - next_skip) if q.load_active_slice().get('active') else 0
     return SliceResult(exit_code=rc, stdout=out, stderr=err, skip_before=skip_before, next_skip_after=next_skip,
                        progress_source=progress_source, dictionary_candidate_cursor=next_skip,
-                       exhausted=arm.exhausted, extra={
+                       exhausted=arm.exhausted, executed=True, valid_work=valid_work, execution_status=('executed' if valid_work else 'failed_no_progress'), extra={
+        'feedback_state_dir': str(q.root),
+        'generated_candidates_count': len(q.load_generated_candidates()),
         'active_slice': q.load_active_slice().get('active', False),
         'active_slice_file': active.get('slice_file'),
         'active_slice_total_candidates': total,

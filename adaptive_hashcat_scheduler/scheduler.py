@@ -107,8 +107,11 @@ def _availability(arm, context, current_adaptive_slice, force_queue: bool = Fals
 def choose_arm(arms, schedule, warmup, epsilon, rng, current_adaptive_slice):
     context = choose_arm.context
     choose_arm.unavailable = []
+    skipped_once = getattr(choose_arm, 'skip_once', set())
     normal=[]
     for a in arms:
+        if a.name in skipped_once:
+            continue
         info = _availability(a, context, current_adaptive_slice)
         a.last_availability = info
         if info['available']:
@@ -125,6 +128,8 @@ def choose_arm(arms, schedule, warmup, epsilon, rng, current_adaptive_slice):
                 warmup.remove(a.name); return a,'warmup'
     due=[]
     for a in arms:
+        if a.name in skipped_once:
+            continue
         n=a.config.get('force_every_slices')
         if not n: continue
         since=current_adaptive_slice-a.last_run_adaptive_slice
@@ -287,13 +292,18 @@ def run_scheduler(args) -> int:
     completed_slices = 0
     start_time = time.time()
     console_mode = 'quiet' if getattr(args, 'quiet', False) else ('verbose' if getattr(args, 'verbose', False) else 'default')
-    for job in range(1,total_slices+1):
+    attempted_jobs = 0
+    skipped_this_completed_slice = set()
+    while completed_slices < total_slices:
+        job = completed_slices + 1
+        choose_arm.skip_once = skipped_this_completed_slice
         arm,reason=choose_arm(arms,args.schedule,warmup if args.schedule=='adaptive' else [],epsilon,rng,current_adaptive_slice)
         if arm is None:
             if console_mode == 'verbose':
                 for unavailable in getattr(choose_arm, 'unavailable', []):
                     print('Unavailable arm: '+json.dumps(unavailable,separators=(',',':')), flush=True)
             break
+        attempted_jobs += 1
         phase='warmup' if reason=='warmup' else 'adaptive'
         use_arm_local = phase == 'warmup' and warmup_scoring == 'arm_local'
         arm_local_potfile = None
@@ -305,6 +315,11 @@ def run_scheduler(args) -> int:
             ctx.potfile_path_override = None
         score_before=arm.score; t0=time.time(); res=arm.run_slice(ctx); res.runtime_seconds=max(0.0,time.time()-t0)
         ctx.potfile_path_override = None
+        if not res.executed:
+            skipped_this_completed_slice.add(arm.name)
+            if console_mode == 'verbose':
+                print('[skip] '+json.dumps({'arm': arm.name, 'reason': res.execution_status, **getattr(arm, 'last_availability', {}), **res.extra}, separators=(',', ':')), flush=True)
+            continue
         arm_local_cracks = arm_local_new_cracks = duplicate_cracks_vs_shared = 0
         if use_arm_local:
             arm_local_after = pot_values(arm_local_potfile)
@@ -327,12 +342,13 @@ def run_scheduler(args) -> int:
                 if (console_mode == 'verbose' or a.config.get('debug_expansions')) and expansion.get('parent_debug_expansions'):
                     for debug_record in expansion.get('parent_debug_expansions', []):
                         print('Feedback expansion: '+json.dumps({'arm': a.name, **debug_record}, separators=(',', ':')), flush=True)
-        valid_work = bool(res.extra.get('feedback_valid_work', True))
+        valid_work = bool(res.valid_work and res.extra.get('feedback_valid_work', True))
         marginal=len(new_pairs)
         reward_count = arm_local_new_cracks if use_arm_local else marginal
         reward=(reward_count/res.runtime_seconds) if res.runtime_seconds>0 and valid_work else 0.0
         if valid_work:
-            arm.score=arm.score+alpha*(reward-arm.score); arm.runs+=1; arm.total_runtime+=res.runtime_seconds; arm.total_new_cracks+=marginal
+            arm.score=arm.score+alpha*(reward-arm.score)
+        arm.runs+=1; arm.total_runtime+=res.runtime_seconds; arm.total_new_cracks+=marginal
         if args.schedule=='adaptive' and reason!='warmup' and valid_work:
             arm.last_run_adaptive_slice=current_adaptive_slice; current_adaptive_slice+=1
         n=arm.config.get('force_every_slices'); since=(current_adaptive_slice-arm.last_run_adaptive_slice) if n else None
@@ -343,7 +359,7 @@ def run_scheduler(args) -> int:
                 print('Unavailable arm: '+json.dumps(unavailable,separators=(',',':')), flush=True)
         rec={'timestamp':utc_now(),'job_id':job,'phase':phase,'arm':arm.name,'attack_type':arm.type,'selection_reason':reason,
              'skip_before':res.skip_before,'next_skip_after':res.next_skip_after,'runtime_seconds':res.runtime_seconds,
-             'exit_code':res.exit_code,'exit_meaning':EXIT_MEANINGS.get(res.exit_code,'error'),'progress_source':res.progress_source,
+             'exit_code':res.exit_code,'exit_meaning':EXIT_MEANINGS.get(res.exit_code,'error'),'execution_status':res.execution_status,'valid_work':valid_work,'progress_source':res.progress_source,
              'hashcat_optimized_kernels':ctx.hashcat_optimized_kernels,'hashcat_optimized_kernel_hint':optimized_hint,
              'dictionary_candidate_cursor':res.dictionary_candidate_cursor,'new_cracks':marginal,'marginal_new_cracks':marginal,'shared_new_cracks':marginal,
              'warmup_scoring':warmup_scoring if phase == 'warmup' else 'shared_marginal',
@@ -358,7 +374,8 @@ def run_scheduler(args) -> int:
              'feedback_expansion_metrics':feedback_expansion_metrics or None, **availability_fields, **res.extra}
         with open(jobs_path,'a',encoding='utf-8') as f: f.write(json.dumps(rec,separators=(',',':'))+'\n')
         with open(os.path.join(args.out_dir,'hashcat_logs',f'job_{job:06d}.log'),'w',encoding='utf-8') as f: f.write(res.stdout+'\n'+res.stderr)
-        completed_slices = job
+        completed_slices += 1
+        skipped_this_completed_slice = set()
         print_slice_progress(rec, total_slices, console_mode)
     final_discoveries = len(prev)
     print(format_final_summary(completed_slices, final_discoveries, time.time() - start_time, arms, jobs_path), flush=True)
