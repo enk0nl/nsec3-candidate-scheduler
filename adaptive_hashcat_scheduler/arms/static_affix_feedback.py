@@ -54,6 +54,9 @@ class StaticAffixFeedbackArm(Arm):
             'affix_suffix_candidates_generated': 0,
             'candidates_enqueued': 0,
             'duplicates_skipped': 0,
+            'affix_duplicates_generated': 0,
+            'affix_duplicates_queued': 0,
+            'affix_duplicates_already_cracked': 0,
             'rejected_candidates': 0,
         }
 
@@ -69,7 +72,8 @@ class StaticAffixFeedbackArm(Arm):
 
     def on_new_discoveries(self, discoveries, context) -> dict[str, Any]:
         q = self._queue(context)
-        seen = q.load_seen_candidates()
+        generated = q.load_generated_candidates()
+        queued = set(q.load_queue())
         expanded = q.load_expanded_bases()
         cracked = {value for _, value in iter_potfile_cracks(context.potfile)}
         to_enqueue: list[str] = []
@@ -101,10 +105,16 @@ class StaticAffixFeedbackArm(Arm):
                 if cand is None:
                     metrics['rejected_candidates'] += 1
                     continue
-                if cand in seen or cand in cracked:
-                    metrics['duplicates_skipped'] += 1
+                if cand in cracked:
+                    metrics['affix_duplicates_already_cracked'] += 1; metrics['duplicates_skipped'] += 1
                     continue
-                seen.add(cand)
+                if cand in queued:
+                    metrics['affix_duplicates_queued'] += 1; metrics['duplicates_skipped'] += 1
+                    continue
+                if cand in generated:
+                    metrics['affix_duplicates_generated'] += 1; metrics['duplicates_skipped'] += 1
+                    continue
+                generated.add(cand); queued.add(cand)
                 to_enqueue.append(cand)
             expanded.add(base)
             bases.append(base)

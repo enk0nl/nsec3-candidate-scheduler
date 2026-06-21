@@ -17,7 +17,7 @@ class CommonFeedbackArm(Arm):
     def run_slice(self, context):
         return run_feedback_dictionary_slice(self, context, self.last_expansion)
     def on_new_discoveries(self, discoveries, context):
-        q=self._queue(context); seen=q.load_seen_candidates(); expanded=q.load_expanded_bases(); cands=[]; bases=[]; gen=dup=rej=0
+        q=self._queue(context); generated=q.load_generated_candidates(); queued=set(q.load_queue()); expanded=q.load_expanded_bases(); cands=[]; bases=[]; gen=dup=rej=0
         for raw in discoveries:
             base=normalize_dns_name(raw)
             if base is None or base in expanded: rej+=1; continue
@@ -26,8 +26,8 @@ class CommonFeedbackArm(Arm):
                 if not lab: continue
                 for cand in (f'{base}.{lab}', f'{lab}.{base}'):
                     gen+=1; cand=normalize_dns_name(cand)
-                    if cand in seen: dup+=1; continue
-                    seen.add(cand); cands.append(cand)
+                    if cand in generated or cand in queued: dup+=1; continue
+                    generated.add(cand); queued.add(cand); cands.append(cand)
             expanded.add(base); bases.append(base)
         enq=q.append_candidates(cands); q.mark_bases_expanded(bases)
         self.last_expansion={'bases_expanded':len(bases),'predictions_generated':gen,'candidates_enqueued':enq,'duplicates_skipped':dup,'rejected_candidates':rej}

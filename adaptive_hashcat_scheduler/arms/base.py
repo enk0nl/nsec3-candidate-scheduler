@@ -13,6 +13,9 @@ class SliceResult:
     progress_source: str = 'unknown'
     dictionary_candidate_cursor: int | None = None
     exhausted: bool = False
+    executed: bool = True
+    valid_work: bool = True
+    execution_status: str = 'executed'
     extra: dict[str, Any] = field(default_factory=dict)
 
 @dataclass

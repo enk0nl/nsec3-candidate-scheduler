@@ -15,7 +15,7 @@ A lightweight experimental scheduler for comparative hash cracking experiments u
 
 ## Simplified experiment model
 
-This scheduler is currently tuned for hashcat mode 8300 / NSEC3-style salted cracking. Arms are explicit dictionary, brute-force mask, or one optional queue-driven feedback arm. Rewards remain `new discoveries / actual runtime`, with adaptive scores updated by alpha/epsilon bandit logic. Dictionary cursor tracking uses hashcat status JSON progress divided by `recovered_salts_total`; if that progress cannot be parsed, the dictionary cursor is not advanced. Feedback state lives in the four feedback files listed below: discoveries expand each base once, enqueue unseen `<base>.<common>` and `<common>.<base>` candidates, and drain the queue into `feedback_slice_candidates.txt` when the feedback arm runs. Optional `force_every_slices` cadence applies only after adaptive warm-up and only to available arms. Known limitation: feedback slice candidate resume may not perfectly preserve partial progress within a drained feedback slice.
+This scheduler is currently tuned for hashcat mode 8300 / NSEC3-style salted cracking. Arms are explicit dictionary, brute-force mask, or queue-driven feedback arms. Rewards remain `new discoveries / actual runtime`, with adaptive scores updated by alpha/epsilon bandit logic. Dictionary cursor tracking uses hashcat status JSON progress divided by `recovered_salts_total`; if that progress cannot be parsed, the dictionary cursor is not advanced. Feedback state lives under `<out_dir>/feedback/<arm>/`: discoveries expand each base once, enqueue generated candidates, and run resumable active slices from `slice_candidates.txt`. Optional `force_every_slices` cadence applies only after adaptive warm-up and only to available arms.
 
 ## Supported attack strategies
 
@@ -34,16 +34,16 @@ Multiple masks are attempted in config order with independent per-mask keyspace/
 
 ## Feedback arms
 
-A feedback arm is optional and is only registered when explicitly present in the config with `"type": "feedback"`. Set `"enabled": false` to leave it out of scheduling. At most one enabled feedback arm may be configured. `common_labels` is required and must be a non-empty list of strings. Feedback bases and common labels are normalized to lowercase and stripped of surrounding whitespace; single labels, multi-label names, underscores, hyphens, and digits are allowed. Empty names, leading/trailing dots, empty dot components, embedded whitespace, labels longer than 63 characters, and names longer than 253 characters are rejected.
+Feedback arms are optional and are only registered when explicitly present in the config. Set `"enabled": false` to leave an arm out of scheduling. For the legacy common-label `"type": "feedback"` arm, `common_labels` is required and must be a non-empty list of strings. Feedback bases and common labels are normalized to lowercase and stripped of surrounding whitespace; single labels, multi-label names, underscores, hyphens, and digits are allowed. Empty names, leading/trailing dots, empty dot components, embedded whitespace, labels longer than 63 characters, and names longer than 253 characters are rejected.
 
-After each slice, newly cracked names are expanded into both `<discovered>.<common>` and `<common>.<discovered>` candidates, deduplicated through persistent feedback state files in the run output directory, and appended to `feedback_queue.txt`. Feedback-like arms (`feedback`, `predictive_prefix`, `predictive_suffix`, `permutation`, `static_affix_feedback`, and `parent_domain_feedback`) are eligible for normal selection only when the queue has at least `min_queue_size` candidates (default `1`) and the arm has waited at least `min_slices_between_runs` adaptive slices (default `0`). When selected, the queue is written to `feedback_slice_candidates.txt`, drained, and run through hashcat as a dictionary slice using the same runtime limit and reward calculation as other arms.
+After each slice, newly cracked names are expanded into both `<discovered>.<common>` and `<common>.<discovered>` candidates, deduplicated through per-arm feedback state under `feedback/<arm>/`, and appended to that arm's `queue.txt`. Feedback-like arms (`feedback`, `predictive_prefix`, `predictive_suffix`, `permutation`, `static_affix_feedback`, and `parent_domain_feedback`) are eligible for normal selection only when they have runnable work and the queue has at least `min_queue_size` candidates (default `1`) or an active slice. When selected, pending queue entries move to `slice_candidates.txt` in the same per-arm directory and can resume from `active_slice.json` if a runtime-limited hashcat slice stops early.
 
 
 ### Parent-domain feedback
 
 A `parent_domain_feedback` arm observes cracked DNS names during warm-up and adaptive phases, but only runs during the adaptive phase. For every newly cracked multi-label name, it enqueues parent names formed only by repeatedly removing the leftmost label. For example, `dev.api.test` generates `api.test` and `test`; a single-label discovery such as `test` generates nothing.
 
-Optional settings are `min_parent_labels` (default `1`), `max_parents_per_discovery` (default `null`), and `include_single_label_parent` (default `true`). Setting `include_single_label_parent` to `false` makes the effective minimum parent length at least two labels, so `dev.api.test` generates `api.test` but not `test`. The arm uses feedback state files under the configured arm name, such as `parent-domain_queue.txt`, `parent-domain_seen_candidates.txt`, `parent-domain_expanded_bases.txt`, `parent-domain_slice_candidates.txt`, and `parent-domain_active_slice.json`; `seen_candidates` is only a generated-candidate dedupe ledger, not a record of tested or cracked candidates. Enable `debug_expansions` with an optional `debug_sample_size` (default `20`) to include generated-parent samples and per-base expansion records that split skips into already-cracked, queued, and seen-candidate reasons.
+Optional settings are `min_parent_labels` (default `1`), `max_parents_per_discovery` (default `null`), and `include_single_label_parent` (default `true`). Setting `include_single_label_parent` to `false` makes the effective minimum parent length at least two labels, so `dev.api.test` generates `api.test` but not `test`. The arm uses feedback state files under `feedback/parent-domain/`, including `queue.txt`, `generated_candidates.txt`, `expanded_bases.txt`, `slice_candidates.txt`, and `active_slice.json`; `generated_candidates.txt` is a generated-candidate dedupe ledger, not a record of tested or cracked candidates. Enable `debug_expansions` with an optional `debug_sample_size` (default `20`) to include generated-parent samples and per-base expansion records that split skips into already-cracked, queued, and generated-candidate reasons.
 
 ## Scheduling modes
 
@@ -79,15 +79,17 @@ Optional per-arm forced cadence can be configured with `"force_every_slices": N`
 
 ```text
 .
+├── adaptive_hashcat_scheduler/
+├── docs/config.md
+├── example_config.json
 ├── hashcat_scheduler.py
-├── examples/
 ├── runs/
 └── README.md
 ```
 
 ## Example config
 
-See: `examples/example_config.json`.
+See the canonical example at `example_config.json`. It is valid JSON and includes every supported arm type and major scheduler/feedback setting. See `docs/config.md` for concise configuration notes.
 
 ## Example command
 
@@ -95,7 +97,7 @@ See: `examples/example_config.json`.
 python3 hashcat_scheduler.py \
   --hashes hashes.txt \
   --hash-mode 8300 \
-  --config examples/example_config.json \
+  --config example_config.json \
   --out-dir runs/example \
   --schedule adaptive \
   --total-slices 30
@@ -110,7 +112,7 @@ Each run writes to `--out-dir`:
 - `jobs.jsonl` (per-slice execution metrics)
 - `hits.jsonl` (newly cracked entries)
 - `run_summary.json` (final aggregate summary)
-- `feedback_queue.txt`, `feedback_seen_candidates.txt`, `feedback_expanded_bases.txt`, and `feedback_slice_candidates.txt` when a feedback arm is configured
+- `feedback/<arm>/queue.txt`, `feedback/<arm>/generated_candidates.txt`, `feedback/<arm>/expanded_bases.txt`, `feedback/<arm>/slice_candidates.txt`, and `feedback/<arm>/active_slice.json` when a feedback arm is configured
 
 `jobs.jsonl` now includes parsed hashcat status fields (progress/speed/recovery/status/session/runtime estimates) when available, with `null` values when unavailable.
 
@@ -132,7 +134,7 @@ The package entry point is now:
 python3 -m adaptive_hashcat_scheduler run \
   --hashes /path/to/nsec3_hashcat.txt \
   --hash-mode 8300 \
-  --config configs/adaptive_predictive_feedback.json \
+  --config example_config.json \
   --out-dir runs/adaptive_predictive \
   --schedule adaptive \
   --total-slices 150 \
@@ -167,9 +169,9 @@ For `k2._domainkey.example`, the prefix model learns `_domainkey -> k2` and `exa
 
 ## Enabling predictive_prefix and predictive_suffix arms
 
-Predictive arms are never injected automatically. Add each arm explicitly to the config. Each arm has independent scheduling state and independent text files named after the arm, for example `predictive-prefix_queue.txt`, `predictive-prefix_seen_candidates.txt`, and `predictive-prefix_expanded_bases.txt`.
+Predictive arms are never injected automatically. Add each arm explicitly to the config. Each arm has independent scheduling state in a per-arm directory, for example `feedback/predictive-prefix/queue.txt`, `feedback/predictive-prefix/generated_candidates.txt`, and `feedback/predictive-prefix/expanded_bases.txt`.
 
-See `configs/adaptive_predictive_feedback.json` for a complete example with `predictive_prefix` and `predictive_suffix` arms.
+See `example_config.json` for a complete example with all supported arm types, including `predictive_prefix` and `predictive_suffix`.
 
 ## Candidate generation
 
@@ -188,5 +190,5 @@ Any arm may set `force_every_slices`. During the adaptive phase, available overd
 - The predictive model is a simple adjacent-pair model with trigram smoothing.
 - The scheduler is tuned for DNS/NSEC3 hashcat mode 8300.
 - Text-file feedback queues may need SQLite or another transactional store later.
-- Feedback slice partial resume is limited because v1 drains the full queue into the slice file.
+- Feedback slices are resumable through per-arm `active_slice.json` and `slice_candidates.txt` files.
 - Separate prefix/suffix predictors may produce overlapping candidates; dedupe is per-arm in v1.
