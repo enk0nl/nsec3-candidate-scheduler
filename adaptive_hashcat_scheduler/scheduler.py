@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import datetime as dt, json, os, random, time
 from typing import Any
 
-FEEDBACK_TYPES = {'feedback', 'predictive_prefix', 'predictive_suffix', 'permutation', 'static_affix_feedback'}
+FEEDBACK_TYPES = {'feedback', 'predictive_prefix', 'predictive_suffix', 'permutation', 'static_affix_feedback', 'parent_domain_feedback'}
 
 from adaptive_hashcat_scheduler.config import load_config
 from adaptive_hashcat_scheduler.hashcat.potfile import iter_potfile_cracks
@@ -14,6 +14,7 @@ from adaptive_hashcat_scheduler.arms.feedback_common import CommonFeedbackArm
 from adaptive_hashcat_scheduler.arms.feedback_predictive import PredictiveFeedbackArm
 from adaptive_hashcat_scheduler.arms.permutation import PermutationArm
 from adaptive_hashcat_scheduler.arms.static_affix_feedback import StaticAffixFeedbackArm
+from adaptive_hashcat_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
 
 @dataclass
 class SchedulerContext:
@@ -35,6 +36,7 @@ def make_arm(cfg):
     if t in {'predictive_prefix','predictive_suffix'}: return PredictiveFeedbackArm(name,t,cfg)
     if t=='permutation': return PermutationArm(name,t,cfg)
     if t=='static_affix_feedback': return StaticAffixFeedbackArm(name,t,cfg)
+    if t=='parent_domain_feedback': return ParentDomainFeedbackArm(name,t,cfg)
     raise ValueError(f'unknown arm type: {t}')
 
 def _feedback_pending_virtual_streams(arm, context) -> int:
@@ -260,7 +262,14 @@ def run_scheduler(args) -> int:
         score_before=arm.score; t0=time.time(); res=arm.run_slice(ctx); res.runtime_seconds=max(0.0,time.time()-t0)
         after=pot_values(potfile); new_pairs=[(h,v) for h,v in after.items() if h not in prev]; prev=after
         discoveries=[v for _,v in new_pairs]
-        for a in arms: a.on_new_discoveries(discoveries, ctx)
+        feedback_expansion_metrics = {}
+        for a in arms:
+            expansion = a.on_new_discoveries(discoveries, ctx)
+            if discoveries and expansion:
+                feedback_expansion_metrics[a.name] = expansion
+                if (console_mode == 'verbose' or a.config.get('debug_expansions')) and expansion.get('parent_debug_expansions'):
+                    for debug_record in expansion.get('parent_debug_expansions', []):
+                        print('Feedback expansion: '+json.dumps({'arm': a.name, **debug_record}, separators=(',', ':')), flush=True)
         valid_work = bool(res.extra.get('feedback_valid_work', True))
         marginal=len(new_pairs); reward=(marginal/res.runtime_seconds) if res.runtime_seconds>0 and valid_work else 0.0
         if valid_work:
@@ -281,7 +290,8 @@ def run_scheduler(args) -> int:
              'dictionary_candidate_cursor':res.dictionary_candidate_cursor,'new_cracks':marginal,'marginal_new_cracks':marginal,
              'total_cracks':len(after),'reward':reward,'score_before':score_before,'score_after':arm.score,'exhausted':arm.exhausted,
              'forced_cadence_interval':n,'slices_since_last_run':since,'overdue_ratio':(since/n if n and since is not None else None),
-             'unavailable_arms':getattr(choose_arm, 'unavailable', []) if console_mode == 'verbose' else None, **availability_fields, **res.extra}
+             'unavailable_arms':getattr(choose_arm, 'unavailable', []) if console_mode == 'verbose' else None,
+             'feedback_expansion_metrics':feedback_expansion_metrics or None, **availability_fields, **res.extra}
         with open(jobs_path,'a',encoding='utf-8') as f: f.write(json.dumps(rec,separators=(',',':'))+'\n')
         with open(os.path.join(args.out_dir,'hashcat_logs',f'job_{job:06d}.log'),'w',encoding='utf-8') as f: f.write(res.stdout+'\n'+res.stderr)
         completed_slices = job
