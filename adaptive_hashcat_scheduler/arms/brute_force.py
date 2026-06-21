@@ -223,6 +223,7 @@ class BruteForceArm(Arm):
             context.hashcat_bin, context.hash_mode, 3, context.slice_seconds,
             context.potfile, context.hashes, candidate=mask, skip=skip_before,
             limit=limit, extra_args=[*self.charset_args(), '--session', self._session_name(mask_index)],
+            optimized_kernels=context.hashcat_optimized_kernels,
         )
         rc, out, err = run_cmd(cmd)
         runtime_reached = rc == 4

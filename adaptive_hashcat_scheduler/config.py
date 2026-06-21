@@ -60,6 +60,12 @@ def _validate_permutation(arm: dict[str, Any]) -> None:
 def load_config(path: str) -> dict[str, Any]:
     with open(path,'r',encoding='utf-8') as f: cfg=json.load(f)
     base=Path(path).parent
+    hashcat_cfg = cfg.get('hashcat') or {}
+    if not isinstance(hashcat_cfg, dict):
+        raise ValueError('hashcat config must be an object')
+    optimized = hashcat_cfg.get('optimized_kernels')
+    if optimized is not None and not isinstance(optimized, bool):
+        raise ValueError('hashcat.optimized_kernels must be boolean')
     arms=[]
     for arm in cfg.get('arms',[]):
         if not arm.get('enabled', True): continue

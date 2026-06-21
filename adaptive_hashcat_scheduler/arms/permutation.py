@@ -114,7 +114,7 @@ class PermutationArm(Arm):
         slice_file, written, _ = q.write_queue_to_slice_file()
         cursor = self._read_cursor(context)
         cmd = build_hashcat_command(context.hashcat_bin, context.hash_mode, 0, context.slice_seconds,
-                                    context.potfile, context.hashes, candidate=slice_file)
+                                    context.potfile, context.hashes, candidate=slice_file, optimized_kernels=context.hashcat_optimized_kernels)
         rc, out, err = run_cmd(cmd)
         summ = latest_summary(out + '\n' + err)
         processed = 0

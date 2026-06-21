@@ -10,9 +10,12 @@ def run_cmd(cmd: list[str]) -> tuple[int, str, str]:
 
 def build_hashcat_command(hashcat_bin: str, hash_mode: int, attack_mode: int, runtime: int, potfile: str, hashes: str,
                           candidate: Optional[str] = None, skip: int = 0, limit: Optional[int] = None,
-                          extra_args: Optional[list[str]] = None) -> list[str]:
-    cmd = [hashcat_bin, '-m', str(hash_mode), '-a', str(attack_mode), '--runtime', str(runtime),
-           '--status', '--status-json', '--status-timer', '5', '--potfile-path', potfile, hashes]
+                          extra_args: Optional[list[str]] = None, optimized_kernels: bool = True) -> list[str]:
+    cmd = [hashcat_bin, '-m', str(hash_mode)]
+    if optimized_kernels:
+        cmd.append('-O')
+    cmd.extend(['-a', str(attack_mode), '--runtime', str(runtime),
+                '--status', '--status-json', '--status-timer', '5', '--potfile-path', potfile, hashes])
     if skip > 0:
         cmd.extend(['--skip', str(skip)])
     if limit is not None:

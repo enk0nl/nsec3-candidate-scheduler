@@ -14,7 +14,7 @@ class CommonFeedbackArm(Arm):
     def is_available(self, context): return (not self.exhausted) and self._queue(context).queue_has_items()
     def run_slice(self, context):
         q=self._queue(context); before=q.queue_size_lines(); sf,w,after=q.move_queue_to_slice_file()
-        rc,out,err=run_cmd(build_hashcat_command(context.hashcat_bin, context.hash_mode,0,context.slice_seconds,context.potfile,context.hashes,candidate=sf))
+        rc,out,err=run_cmd(build_hashcat_command(context.hashcat_bin, context.hash_mode,0,context.slice_seconds,context.potfile,context.hashes,candidate=sf, optimized_kernels=context.hashcat_optimized_kernels))
         return SliceResult(exit_code=rc, stdout=out, stderr=err, extra={'queue_size_before_slice':before,'candidates_written_to_slice':w,'queue_size_after_slice':after, **self.last_expansion})
     def on_new_discoveries(self, discoveries, context):
         q=self._queue(context); seen=q.load_seen_candidates(); expanded=q.load_expanded_bases(); cands=[]; bases=[]; gen=dup=rej=0
