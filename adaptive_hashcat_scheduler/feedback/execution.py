@@ -65,7 +65,7 @@ def run_feedback_dictionary_slice(arm, context, extra: dict[str, Any] | None = N
                                 context.potfile, context.hashes, candidate=slice_file,
                                 skip=skip_before, limit=remaining_before,
                                 extra_args=['--session', session],
-                                optimized_kernels=context.hashcat_optimized_kernels)
+                                optimized_kernels=context.hashcat_optimized_kernels, potfile_path_override=getattr(context, 'potfile_path_override', None))
     rc, out, err = run_cmd(cmd)
     summary = latest_summary(out + '\n' + err)
     exit_meaning = EXIT_MEANINGS.get(rc, 'error')

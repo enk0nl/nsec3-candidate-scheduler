@@ -13,7 +13,7 @@ class DictionaryArm(Arm):
     def is_available(self, context): return (not self.exhausted) and (self.keyspace is None or self.next_skip < self.keyspace)
     def run_slice(self, context):
         skip=self.next_skip
-        cmd=build_hashcat_command(context.hashcat_bin,context.hash_mode,0,context.slice_seconds,context.potfile,context.hashes,candidate=self.config['wordlist'],skip=skip,limit=None,optimized_kernels=context.hashcat_optimized_kernels)
+        cmd=build_hashcat_command(context.hashcat_bin,context.hash_mode,0,context.slice_seconds,context.potfile,context.hashes,candidate=self.config['wordlist'],skip=skip,limit=None,optimized_kernels=context.hashcat_optimized_kernels, potfile_path_override=getattr(context, 'potfile_path_override', None))
         rc,out,err=run_cmd(cmd); summ=latest_summary(out+'\n'+err)
         cursor=None; next_skip=skip; src='unknown'
         pc=summ.get('progress_cur'); salts=summ.get('recovered_salts_total')

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-import datetime as dt, json, os, random, time
+import datetime as dt, json, os, random, re, shutil, time
 from typing import Any
 
 FEEDBACK_TYPES = {'feedback', 'predictive_prefix', 'predictive_suffix', 'permutation', 'static_affix_feedback', 'parent_domain_feedback'}
@@ -20,6 +20,7 @@ from adaptive_hashcat_scheduler.arms.parent_domain_feedback import ParentDomainF
 class SchedulerContext:
     hashes: str; hash_mode: int; out_dir: str; slice_seconds: int; potfile: str
     hashcat_bin: str='hashcat'; default_limit: int=1000000; hashcat_optimized_kernels: bool=True
+    potfile_path_override: str | None = None
 
 def utc_now(): return dt.datetime.now(dt.timezone.utc).isoformat()
 def ensure_dir(p): os.makedirs(p, exist_ok=True)
@@ -27,6 +28,25 @@ def ensure_dir(p): os.makedirs(p, exist_ok=True)
 def pot_values(path):
     if not os.path.exists(path): return {}
     return {h:v for h,v in iter_potfile_cracks(path)}
+
+
+def _safe_potfile_stem(name: str) -> str:
+    safe = re.sub(r'[^A-Za-z0-9._-]+', '_', name).strip('._')
+    return safe or 'arm'
+
+def _copy_potfile_baseline(source: str, dest: str) -> None:
+    ensure_dir(os.path.dirname(dest))
+    if os.path.exists(source) and os.path.getsize(source) > 0:
+        shutil.copyfile(source, dest)
+    else:
+        open(dest, 'w', encoding='utf-8').close()
+
+def _append_potfile_pairs(path: str, pairs: list[tuple[str, str]]) -> None:
+    if not pairs:
+        return
+    with open(path, 'a', encoding='utf-8') as f:
+        for h, value in pairs:
+            f.write(f'{h}:{value}\n')
 
 def make_arm(cfg):
     t=cfg['type']; name=cfg['name']
@@ -168,9 +188,17 @@ def format_slice_oneline(rec: dict[str, Any], total_slices: int) -> str:
                    f"{slice_detail}"
                    f" gate_queue={rec.get('queue_size')}/{rec.get('min_queue_size')}"
                    f" cooldown={rec.get('slices_since_last_run')}/{rec.get('min_slices_between_runs')}")
+    if rec.get('phase') == 'warmup' and rec.get('warmup_scoring') == 'arm_local':
+        return (
+            f"{prefix}{details} local={rec.get('arm_local_new_cracks')} "
+            f"shared_new={rec.get('shared_new_cracks')} dup={rec.get('duplicate_cracks_vs_shared')} "
+            f"reward={_fmt_float(rec['reward_used_for_score'])} "
+            f"score={_fmt_float(rec['score_before'], 2)}->{_fmt_float(rec['score_after'], 2)} "
+            f"runtime={_fmt_float(rec['runtime_seconds'], 1)}s"
+        )
     return (
         f"{prefix}{details} new={rec['new_cracks']} total={rec['total_cracks']} "
-        f"reward={_fmt_float(rec['reward'])} "
+        f"reward={_fmt_float(rec['reward_used_for_score'])} "
         f"score={_fmt_float(rec['score_before'], 2)}->{_fmt_float(rec['score_after'], 2)} "
         f"runtime={_fmt_float(rec['runtime_seconds'], 1)}s"
     )
@@ -238,6 +266,8 @@ def run_scheduler(args) -> int:
     cfg=load_config(args.config)
     arms=[make_arm(a) for a in cfg['arms']]
     if not arms: raise ValueError('config has no enabled arms')
+    cfg_warmup = cfg.get('warmup') or {}
+    warmup_scoring = cfg_warmup.get('scoring', 'arm_local')
     cfg_hashcat = cfg.get('hashcat') or {}
     optimized_kernels = bool(cfg_hashcat.get('optimized_kernels', True))
     if getattr(args, 'no_optimized_kernels', False):
@@ -247,6 +277,11 @@ def run_scheduler(args) -> int:
     alpha=float(args.alpha if args.alpha is not None else cfg.get('alpha',0.2)); epsilon=float(args.epsilon if args.epsilon is not None else cfg.get('epsilon',0.1))
     rng=random.Random(args.random_seed if args.random_seed is not None else cfg.get('random_seed',0))
     warmup=[a.name for a in arms if getattr(a, 'warmup_eligible', True)]
+    warmup_baseline_potfile=os.path.join(args.out_dir,'warmup_baseline.potfile')
+    shutil.copyfile(potfile, warmup_baseline_potfile)
+    warmup_baseline=pot_values(warmup_baseline_potfile)
+    warmup_potfiles_dir=os.path.join(args.out_dir,'warmup_potfiles')
+    if warmup_scoring == 'arm_local': ensure_dir(warmup_potfiles_dir)
     prev=pot_values(potfile); current_adaptive_slice=0
     total_slices=args.total_slices or 0
     completed_slices = 0
@@ -259,8 +294,30 @@ def run_scheduler(args) -> int:
                 for unavailable in getattr(choose_arm, 'unavailable', []):
                     print('Unavailable arm: '+json.dumps(unavailable,separators=(',',':')), flush=True)
             break
+        phase='warmup' if reason=='warmup' else 'adaptive'
+        use_arm_local = phase == 'warmup' and warmup_scoring == 'arm_local'
+        arm_local_potfile = None
+        if use_arm_local:
+            arm_local_potfile = os.path.join(warmup_potfiles_dir, f'{_safe_potfile_stem(arm.name)}.potfile')
+            _copy_potfile_baseline(warmup_baseline_potfile, arm_local_potfile)
+            ctx.potfile_path_override = arm_local_potfile
+        else:
+            ctx.potfile_path_override = None
         score_before=arm.score; t0=time.time(); res=arm.run_slice(ctx); res.runtime_seconds=max(0.0,time.time()-t0)
-        after=pot_values(potfile); new_pairs=[(h,v) for h,v in after.items() if h not in prev]; prev=after
+        ctx.potfile_path_override = None
+        arm_local_cracks = arm_local_new_cracks = duplicate_cracks_vs_shared = 0
+        if use_arm_local:
+            arm_local_after = pot_values(arm_local_potfile)
+            arm_local_new_pairs=[(h,v) for h,v in arm_local_after.items() if h not in warmup_baseline]
+            arm_local_cracks=len(arm_local_after)
+            arm_local_new_cracks=len(arm_local_new_pairs)
+            shared_before=pot_values(potfile)
+            new_pairs=[(h,v) for h,v in arm_local_new_pairs if h not in shared_before]
+            duplicate_cracks_vs_shared=arm_local_new_cracks-len(new_pairs)
+            _append_potfile_pairs(potfile, new_pairs)
+            after=pot_values(potfile); prev=after
+        else:
+            after=pot_values(potfile); new_pairs=[(h,v) for h,v in after.items() if h not in prev]; prev=after
         discoveries=[v for _,v in new_pairs]
         feedback_expansion_metrics = {}
         for a in arms:
@@ -271,10 +328,11 @@ def run_scheduler(args) -> int:
                     for debug_record in expansion.get('parent_debug_expansions', []):
                         print('Feedback expansion: '+json.dumps({'arm': a.name, **debug_record}, separators=(',', ':')), flush=True)
         valid_work = bool(res.extra.get('feedback_valid_work', True))
-        marginal=len(new_pairs); reward=(marginal/res.runtime_seconds) if res.runtime_seconds>0 and valid_work else 0.0
+        marginal=len(new_pairs)
+        reward_count = arm_local_new_cracks if use_arm_local else marginal
+        reward=(reward_count/res.runtime_seconds) if res.runtime_seconds>0 and valid_work else 0.0
         if valid_work:
             arm.score=arm.score+alpha*(reward-arm.score); arm.runs+=1; arm.total_runtime+=res.runtime_seconds; arm.total_new_cracks+=marginal
-        phase='warmup' if reason=='warmup' else 'adaptive'
         if args.schedule=='adaptive' and reason!='warmup' and valid_work:
             arm.last_run_adaptive_slice=current_adaptive_slice; current_adaptive_slice+=1
         n=arm.config.get('force_every_slices'); since=(current_adaptive_slice-arm.last_run_adaptive_slice) if n else None
@@ -287,7 +345,13 @@ def run_scheduler(args) -> int:
              'skip_before':res.skip_before,'next_skip_after':res.next_skip_after,'runtime_seconds':res.runtime_seconds,
              'exit_code':res.exit_code,'exit_meaning':EXIT_MEANINGS.get(res.exit_code,'error'),'progress_source':res.progress_source,
              'hashcat_optimized_kernels':ctx.hashcat_optimized_kernels,'hashcat_optimized_kernel_hint':optimized_hint,
-             'dictionary_candidate_cursor':res.dictionary_candidate_cursor,'new_cracks':marginal,'marginal_new_cracks':marginal,
+             'dictionary_candidate_cursor':res.dictionary_candidate_cursor,'new_cracks':marginal,'marginal_new_cracks':marginal,'shared_new_cracks':marginal,
+             'warmup_scoring':warmup_scoring if phase == 'warmup' else 'shared_marginal',
+             'potfile_scope':'arm_local' if use_arm_local else 'shared',
+             'arm_local_cracks':arm_local_cracks if phase == 'warmup' else None,
+             'arm_local_new_cracks':arm_local_new_cracks if phase == 'warmup' else None,
+             'duplicate_cracks_vs_shared':duplicate_cracks_vs_shared if phase == 'warmup' else None,
+             'reward_used_for_score':reward,
              'total_cracks':len(after),'reward':reward,'score_before':score_before,'score_after':arm.score,'exhausted':arm.exhausted,
              'forced_cadence_interval':n,'slices_since_last_run':since,'overdue_ratio':(since/n if n and since is not None else None),
              'unavailable_arms':getattr(choose_arm, 'unavailable', []) if console_mode == 'verbose' else None,
