@@ -141,6 +141,21 @@
       "max_candidates_per_slice": 50000,
       "debug_expansions": false,
       "debug_sample_size": 20
+    },
+    {
+      "name": "amass-osint",
+      "type": "amass_osint",
+      "enabled": false,
+      "amass_binary": "/home/vboxuser/go/bin/amass",
+      "domains": "example.nl,example.com",
+      "start_on_run_start": true,
+      "poll_interval_seconds": 5,
+      "run_immediately_when_ready": true,
+      "include_single_label": true,
+      "include_multi_label": true,
+      "max_candidates": null,
+      "dedupe": true,
+      "min_slices_between_runs": 0
     }
   ]
 }
