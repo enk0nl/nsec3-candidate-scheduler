@@ -3,7 +3,59 @@ import json, os
 from pathlib import Path
 from typing import Any
 
-SUPPORTED={'dictionary','brute_force','feedback','predictive_prefix','predictive_suffix'}
+SUPPORTED={'dictionary','brute_force','feedback','predictive_prefix','predictive_suffix','permutation'}
+
+def _validate_permutation(arm: dict[str, Any]) -> None:
+    numeric = {
+        'enabled': True,
+        'min_width': 1,
+        'max_width': 3,
+        'generate_full_range': True,
+        'generate_width_variants': True,
+        'generate_local_radius': True,
+        'allow_wider_width_variants': False,
+        'allow_large_numeric_ranges': False,
+        'local_radius': 50,
+    }
+    numeric.update(arm.get('numeric') or {})
+    alpha = {
+        'enabled': False,
+        'charset': 'abcdefghijklmnopqrstuvwxyz',
+        'min_width': 1,
+        'max_width': 3,
+        'generate_full_range': True,
+        'generate_width_variants': True,
+        'allow_wider_width_variants': False,
+        'allow_large_alpha_ranges': False,
+        'require_numeric_context': True,
+    }
+    alpha.update(arm.get('alpha') or {})
+    for key in ('min_width', 'max_width'):
+        if not isinstance(numeric.get(key), int) or isinstance(numeric.get(key), bool):
+            raise ValueError(f'numeric.{key} must be an integer')
+    if numeric['min_width'] < 1:
+        raise ValueError('numeric.min_width >= 1 required')
+    if numeric['max_width'] < numeric['min_width']:
+        raise ValueError('numeric.max_width >= numeric.min_width required')
+    if not isinstance(numeric.get('local_radius'), int) or isinstance(numeric.get('local_radius'), bool) or numeric['local_radius'] < 0:
+        raise ValueError('numeric.local_radius >= 0 required')
+    if numeric.get('generate_full_range', True) and numeric['max_width'] > 4 and not numeric.get('allow_large_numeric_ranges'):
+        raise ValueError('numeric.allow_large_numeric_ranges=true required when numeric.generate_full_range=true and numeric.max_width > 4')
+    for key in ('min_width', 'max_width'):
+        if not isinstance(alpha.get(key), int) or isinstance(alpha.get(key), bool):
+            raise ValueError(f'alpha.{key} must be an integer')
+    if alpha['min_width'] < 1:
+        raise ValueError('alpha.min_width >= 1 required')
+    if alpha['max_width'] < alpha['min_width']:
+        raise ValueError('alpha.max_width >= alpha.min_width required')
+    charset = alpha.get('charset')
+    if not isinstance(charset, str) or not charset:
+        raise ValueError('alpha.charset must be non-empty')
+    if not alpha.get('allow_non_lowercase_charset') and any(ch < 'a' or ch > 'z' for ch in charset):
+        raise ValueError('alpha.charset must contain only lowercase letters unless alpha.allow_non_lowercase_charset=true')
+    if alpha.get('generate_full_range', True) and alpha['max_width'] > 4 and not alpha.get('allow_large_alpha_ranges'):
+        raise ValueError('alpha.allow_large_alpha_ranges=true required when alpha.generate_full_range=true and alpha.max_width > 4')
+
 
 def load_config(path: str) -> dict[str, Any]:
     with open(path,'r',encoding='utf-8') as f: cfg=json.load(f)
@@ -32,9 +84,11 @@ def load_config(path: str) -> dict[str, Any]:
             if int(arm.get('top_predictions_per_neighbor',100))<=0: raise ValueError('top_predictions_per_neighbor > 0 required')
             if arm.get('base_mode','full') not in ['full','leftmost']: raise ValueError('invalid base_mode')
             if arm.get('prediction_source','leftmost') not in ['full','leftmost']: raise ValueError('invalid prediction_source')
+        if t=='permutation':
+            _validate_permutation(arm)
         fe=arm.get('force_every_slices')
         if fe is not None and (not isinstance(fe,int) or isinstance(fe,bool) or fe<=0): raise ValueError('force_every_slices must be positive int')
-        if t in {'feedback','predictive_prefix','predictive_suffix'}:
+        if t in {'feedback','predictive_prefix','predictive_suffix','permutation'}:
             msbr=arm.get('min_slices_between_runs')
             if msbr is not None and (not isinstance(msbr,int) or isinstance(msbr,bool) or msbr<0): raise ValueError('min_slices_between_runs must be non-negative int')
             mqs=arm.get('min_queue_size')
