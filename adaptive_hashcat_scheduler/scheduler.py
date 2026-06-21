@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import datetime as dt, json, os, random, time
 from typing import Any
 
-FEEDBACK_TYPES = {'feedback', 'predictive_prefix', 'predictive_suffix'}
+FEEDBACK_TYPES = {'feedback', 'predictive_prefix', 'predictive_suffix', 'permutation'}
 
 from adaptive_hashcat_scheduler.config import load_config
 from adaptive_hashcat_scheduler.hashcat.potfile import iter_potfile_cracks
@@ -12,11 +12,12 @@ from adaptive_hashcat_scheduler.arms.dictionary import DictionaryArm
 from adaptive_hashcat_scheduler.arms.brute_force import BruteForceArm
 from adaptive_hashcat_scheduler.arms.feedback_common import CommonFeedbackArm
 from adaptive_hashcat_scheduler.arms.feedback_predictive import PredictiveFeedbackArm
+from adaptive_hashcat_scheduler.arms.permutation import PermutationArm
 
 @dataclass
 class SchedulerContext:
     hashes: str; hash_mode: int; out_dir: str; slice_seconds: int; potfile: str
-    hashcat_bin: str='hashcat'; default_limit: int=1000000
+    hashcat_bin: str='hashcat'; default_limit: int=1000000; hashcat_optimized_kernels: bool=True
 
 def utc_now(): return dt.datetime.now(dt.timezone.utc).isoformat()
 def ensure_dir(p): os.makedirs(p, exist_ok=True)
@@ -31,19 +32,33 @@ def make_arm(cfg):
     if t=='brute_force': return BruteForceArm(name,t,cfg)
     if t=='feedback': return CommonFeedbackArm(name,t,cfg)
     if t in {'predictive_prefix','predictive_suffix'}: return PredictiveFeedbackArm(name,t,cfg)
+    if t=='permutation': return PermutationArm(name,t,cfg)
     raise ValueError(f'unknown arm type: {t}')
+
+def _feedback_pending_virtual_streams(arm, context) -> int:
+    counter = getattr(arm, 'pending_virtual_stream_count', None)
+    if callable(counter):
+        try:
+            return max(0, int(counter(context)))
+        except (TypeError, ValueError):
+            return 0
+    return 0
 
 def _feedback_availability(arm, context, current_adaptive_slice, force_queue: bool = False) -> dict[str, Any]:
     queue_size = arm._queue(context).queue_size_lines()
+    pending_virtual_streams = _feedback_pending_virtual_streams(arm, context)
     min_queue_size = int(arm.config.get('min_queue_size', 1))
     min_slices = int(arm.config.get('min_slices_between_runs', 0))
     slices_since = current_adaptive_slice - arm.last_run_adaptive_slice
+    runnable = queue_size > 0 or pending_virtual_streams > 0
     reason = None
     if arm.exhausted:
         reason = 'exhausted'
     elif slices_since < min_slices:
         reason = 'cooldown'
-    elif queue_size < min_queue_size and not force_queue:
+    elif not runnable:
+        reason = 'forced_cadence_empty_queue' if force_queue else 'empty_queue'
+    elif queue_size < min_queue_size and pending_virtual_streams == 0 and not force_queue:
         reason = 'queue_below_minimum'
     return {
         'available': reason is None,
@@ -52,6 +67,9 @@ def _feedback_availability(arm, context, current_adaptive_slice, force_queue: bo
         'slices_since_last_run': slices_since,
         'min_queue_size': min_queue_size,
         'queue_size': queue_size,
+        'pending_virtual_streams': pending_virtual_streams,
+        'cooldown_satisfied': slices_since >= min_slices,
+        'runnable': runnable,
     }
 
 def _availability(arm, context, current_adaptive_slice, force_queue: bool = False) -> dict[str, Any]:
@@ -90,7 +108,7 @@ def choose_arm(arms, schedule, warmup, epsilon, rng, current_adaptive_slice):
             a.last_availability = info
             due.append((since/n,a.runs,a.total_runtime,a.name,a))
         elif info.get('availability_reason'):
-            forced_skip = {'arm': a.name, 'forced_cadence_due': True, **info}
+            forced_skip = {'arm': a.name, 'forced_due': True, 'forced_cadence_due': True, **info}
             choose_arm.unavailable.append(forced_skip)
     if due: return sorted(due,key=lambda x:(-x[0],x[1],x[2],x[3]))[0][4],'forced_cadence'
     live=normal
@@ -110,6 +128,15 @@ def _feedback_queue_fields(rec):
         rec.get('candidates_written_to_slice'),
         rec.get('candidates_enqueued', 0),
     )
+
+
+def _optimized_kernel_failure_hint(enabled: bool, exit_code: int, stdout: str, stderr: str) -> str | None:
+    if not enabled or exit_code in (0, 1, 4):
+        return None
+    text = (stdout + '\n' + stderr).lower()
+    if 'optimized' in text and ('length' in text or 'plaintext' in text):
+        return 'Hashcat failed with optimized kernels enabled. Try rerunning with --no-optimized-kernels.'
+    return None
 
 def format_slice_oneline(rec: dict[str, Any], total_slices: int) -> str:
     prefix = (
@@ -139,6 +166,7 @@ def format_slice_verbose(rec: dict[str, Any], total_slices: int) -> str:
         f"[{rec['job_id']}/{total_slices}] {rec['phase'].upper()}",
         f"Arm: {rec['arm']}",
         f"Reason: {rec['selection_reason']}",
+        f"Hashcat optimized kernels: {'enabled' if rec.get('hashcat_optimized_kernels') else 'disabled'}",
     ]
     if rec.get('attack_type') == 'dictionary':
         lines.extend([
@@ -191,7 +219,11 @@ def run_scheduler(args) -> int:
     cfg=load_config(args.config)
     arms=[make_arm(a) for a in cfg['arms']]
     if not arms: raise ValueError('config has no enabled arms')
-    ctx=SchedulerContext(args.hashes,args.hash_mode,args.out_dir,args.slice_seconds,potfile,getattr(args,'hashcat_bin','hashcat'),getattr(args,'default_limit',1000000))
+    cfg_hashcat = cfg.get('hashcat') or {}
+    optimized_kernels = bool(cfg_hashcat.get('optimized_kernels', True))
+    if getattr(args, 'no_optimized_kernels', False):
+        optimized_kernels = False
+    ctx=SchedulerContext(args.hashes,args.hash_mode,args.out_dir,args.slice_seconds,potfile,getattr(args,'hashcat_bin','hashcat'),getattr(args,'default_limit',1000000),optimized_kernels)
     choose_arm.context=ctx
     alpha=float(args.alpha if args.alpha is not None else cfg.get('alpha',0.2)); epsilon=float(args.epsilon if args.epsilon is not None else cfg.get('epsilon',0.1))
     rng=random.Random(args.random_seed if args.random_seed is not None else cfg.get('random_seed',0))
@@ -219,12 +251,14 @@ def run_scheduler(args) -> int:
             arm.last_run_adaptive_slice=current_adaptive_slice; current_adaptive_slice+=1
         n=arm.config.get('force_every_slices'); since=(current_adaptive_slice-arm.last_run_adaptive_slice) if n else None
         availability_fields = {k: v for k, v in getattr(arm, 'last_availability', {}).items() if k != 'available'}
+        optimized_hint = _optimized_kernel_failure_hint(ctx.hashcat_optimized_kernels, res.exit_code, res.stdout, res.stderr)
         if console_mode == 'verbose':
             for unavailable in getattr(choose_arm, 'unavailable', []):
                 print('Unavailable arm: '+json.dumps(unavailable,separators=(',',':')), flush=True)
         rec={'timestamp':utc_now(),'job_id':job,'phase':phase,'arm':arm.name,'attack_type':arm.type,'selection_reason':reason,
              'skip_before':res.skip_before,'next_skip_after':res.next_skip_after,'runtime_seconds':res.runtime_seconds,
              'exit_code':res.exit_code,'exit_meaning':EXIT_MEANINGS.get(res.exit_code,'error'),'progress_source':res.progress_source,
+             'hashcat_optimized_kernels':ctx.hashcat_optimized_kernels,'hashcat_optimized_kernel_hint':optimized_hint,
              'dictionary_candidate_cursor':res.dictionary_candidate_cursor,'new_cracks':marginal,'marginal_new_cracks':marginal,
              'total_cracks':len(after),'reward':reward,'score_before':score_before,'score_after':arm.score,'exhausted':arm.exhausted,
              'forced_cadence_interval':n,'slices_since_last_run':since,'overdue_ratio':(since/n if n and since is not None else None),

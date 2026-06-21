@@ -31,7 +31,7 @@ class PredictiveFeedbackArm(Arm):
         before = q.queue_size_lines()
         slice_file, written, after = q.move_queue_to_slice_file()
         cmd = build_hashcat_command(context.hashcat_bin, context.hash_mode, 0, context.slice_seconds,
-                                    context.potfile, context.hashes, candidate=slice_file)
+                                    context.potfile, context.hashes, candidate=slice_file, optimized_kernels=context.hashcat_optimized_kernels)
         rc, out, err = run_cmd(cmd)
         return SliceResult(exit_code=rc, stdout=out, stderr=err, extra={
             'model_path': self.config['model'], 'base_mode': self.config.get('base_mode', 'full'),

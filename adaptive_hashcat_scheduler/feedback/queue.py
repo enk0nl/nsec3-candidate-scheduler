@@ -54,6 +54,34 @@ class FeedbackQueueState:
     def mark_bases_expanded(self, bases: Iterable[str]) -> int:
         return self._append_lines(self.expanded_path, bases)
 
+
+    def write_queue_to_slice_file(self) -> tuple[str, int, int]:
+        count = 0
+        with self.queue_path.open('r', encoding='utf-8', errors='replace') as src, self.slice_path.open('w', encoding='utf-8') as dst:
+            for line in src:
+                value = line.strip()
+                if value:
+                    dst.write(f'{value}\n')
+                    count += 1
+        return str(self.slice_path), count, count
+
+    def discard_queue_prefix(self, count: int) -> int:
+        if count <= 0:
+            return self.queue_size_lines()
+        tmp_path = self.queue_path.with_suffix(self.queue_path.suffix + '.tmp')
+        skipped = 0
+        with self.queue_path.open('r', encoding='utf-8', errors='replace') as src, tmp_path.open('w', encoding='utf-8') as dst:
+            for line in src:
+                value = line.strip()
+                if not value:
+                    continue
+                if skipped < count:
+                    skipped += 1
+                    continue
+                dst.write(f'{value}\n')
+        tmp_path.replace(self.queue_path)
+        return self.queue_size_lines()
+
     def move_queue_to_slice_file(self) -> tuple[str, int, int]:
         count = 0
         with self.queue_path.open('r', encoding='utf-8', errors='replace') as src, self.slice_path.open('w', encoding='utf-8') as dst:
