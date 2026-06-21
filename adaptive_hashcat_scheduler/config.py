@@ -3,7 +3,7 @@ import json, os
 from pathlib import Path
 from typing import Any
 
-SUPPORTED={'dictionary','brute_force','feedback','predictive_prefix','predictive_suffix','permutation'}
+SUPPORTED={'dictionary','brute_force','feedback','predictive_prefix','predictive_suffix','permutation','static_affix_feedback'}
 
 def _validate_permutation(arm: dict[str, Any]) -> None:
     numeric = {
@@ -92,9 +92,22 @@ def load_config(path: str) -> dict[str, Any]:
             if arm.get('prediction_source','leftmost') not in ['full','leftmost']: raise ValueError('invalid prediction_source')
         if t=='permutation':
             _validate_permutation(arm)
+        if t=='static_affix_feedback':
+            arm=dict(arm)
+            for key in ('prefixes','suffixes'):
+                if not arm.get(key): raise ValueError(f'static_affix_feedback arm requires {key}')
+                mp=Path(arm[key])
+                full=mp if mp.is_absolute() or mp.exists() else base/mp
+                if not full.exists(): raise ValueError(f'{key} path does not exist: {arm[key]}')
+                arm[key]=str(full)
+            for key, default in (('top_prefixes',50),('top_suffixes',50)):
+                value=int(arm.get(key, default))
+                if value <= 0: raise ValueError(f'{key} > 0 required')
+                arm[key]=value
+            if arm.get('base_mode','full') != 'full': raise ValueError('static_affix_feedback base_mode must be full')
         fe=arm.get('force_every_slices')
         if fe is not None and (not isinstance(fe,int) or isinstance(fe,bool) or fe<=0): raise ValueError('force_every_slices must be positive int')
-        if t in {'feedback','predictive_prefix','predictive_suffix','permutation'}:
+        if t in {'feedback','predictive_prefix','predictive_suffix','permutation','static_affix_feedback'}:
             msbr=arm.get('min_slices_between_runs')
             if msbr is not None and (not isinstance(msbr,int) or isinstance(msbr,bool) or msbr<0): raise ValueError('min_slices_between_runs must be non-negative int')
             mqs=arm.get('min_queue_size')

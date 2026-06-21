@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import datetime as dt, json, os, random, time
 from typing import Any
 
-FEEDBACK_TYPES = {'feedback', 'predictive_prefix', 'predictive_suffix', 'permutation'}
+FEEDBACK_TYPES = {'feedback', 'predictive_prefix', 'predictive_suffix', 'permutation', 'static_affix_feedback'}
 
 from adaptive_hashcat_scheduler.config import load_config
 from adaptive_hashcat_scheduler.hashcat.potfile import iter_potfile_cracks
@@ -13,6 +13,7 @@ from adaptive_hashcat_scheduler.arms.brute_force import BruteForceArm
 from adaptive_hashcat_scheduler.arms.feedback_common import CommonFeedbackArm
 from adaptive_hashcat_scheduler.arms.feedback_predictive import PredictiveFeedbackArm
 from adaptive_hashcat_scheduler.arms.permutation import PermutationArm
+from adaptive_hashcat_scheduler.arms.static_affix_feedback import StaticAffixFeedbackArm
 
 @dataclass
 class SchedulerContext:
@@ -33,6 +34,7 @@ def make_arm(cfg):
     if t=='feedback': return CommonFeedbackArm(name,t,cfg)
     if t in {'predictive_prefix','predictive_suffix'}: return PredictiveFeedbackArm(name,t,cfg)
     if t=='permutation': return PermutationArm(name,t,cfg)
+    if t=='static_affix_feedback': return StaticAffixFeedbackArm(name,t,cfg)
     raise ValueError(f'unknown arm type: {t}')
 
 def _feedback_pending_virtual_streams(arm, context) -> int:
