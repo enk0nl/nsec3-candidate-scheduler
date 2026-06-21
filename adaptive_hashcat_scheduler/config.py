@@ -3,7 +3,7 @@ import json, os
 from pathlib import Path
 from typing import Any
 
-SUPPORTED={'dictionary','brute_force','feedback','predictive_prefix','predictive_suffix','permutation','static_affix_feedback'}
+SUPPORTED={'dictionary','brute_force','feedback','predictive_prefix','predictive_suffix','permutation','static_affix_feedback','parent_domain_feedback'}
 
 def _validate_permutation(arm: dict[str, Any]) -> None:
     numeric = {
@@ -92,6 +92,16 @@ def load_config(path: str) -> dict[str, Any]:
             if arm.get('prediction_source','leftmost') not in ['full','leftmost']: raise ValueError('invalid prediction_source')
         if t=='permutation':
             _validate_permutation(arm)
+        if t=='parent_domain_feedback':
+            arm=dict(arm)
+            mpl=arm.get('min_parent_labels', 1)
+            if not isinstance(mpl, int) or isinstance(mpl, bool) or mpl < 1: raise ValueError('min_parent_labels must be positive int')
+            arm['min_parent_labels']=mpl
+            mppd=arm.get('max_parents_per_discovery')
+            if mppd is not None and (not isinstance(mppd, int) or isinstance(mppd, bool) or mppd < 0): raise ValueError('max_parents_per_discovery must be non-negative int or null')
+            isp=arm.get('include_single_label_parent', True)
+            if not isinstance(isp, bool): raise ValueError('include_single_label_parent must be boolean')
+            arm['include_single_label_parent']=isp
         if t=='static_affix_feedback':
             arm=dict(arm)
             for key in ('prefixes','suffixes'):
@@ -107,7 +117,7 @@ def load_config(path: str) -> dict[str, Any]:
             if arm.get('base_mode','full') != 'full': raise ValueError('static_affix_feedback base_mode must be full')
         fe=arm.get('force_every_slices')
         if fe is not None and (not isinstance(fe,int) or isinstance(fe,bool) or fe<=0): raise ValueError('force_every_slices must be positive int')
-        if t in {'feedback','predictive_prefix','predictive_suffix','permutation','static_affix_feedback'}:
+        if t in {'feedback','predictive_prefix','predictive_suffix','permutation','static_affix_feedback','parent_domain_feedback'}:
             msbr=arm.get('min_slices_between_runs')
             if msbr is not None and (not isinstance(msbr,int) or isinstance(msbr,bool) or msbr<0): raise ValueError('min_slices_between_runs must be non-negative int')
             mqs=arm.get('min_queue_size')
