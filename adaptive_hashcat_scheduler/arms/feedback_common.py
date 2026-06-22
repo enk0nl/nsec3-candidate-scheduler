@@ -30,5 +30,5 @@ class CommonFeedbackArm(Arm):
                     expansion_seen.add(cand); queued.add(cand); cands.append(cand)
             expanded.add(base); bases.append(base)
         enq_stats=q.enqueue_generated_candidates(cands); enq=enq_stats['candidates_enqueued']; dup+=enq_stats['candidates_skipped_generated_duplicate']; q.mark_bases_expanded(bases)
-        self.last_expansion={'bases_expanded':len(bases),'predictions_generated':gen,'candidates_enqueued':enq,'duplicates_skipped':dup,'rejected_candidates':rej,'generated_candidates_backend':enq_stats['generated_candidates_backend'],'candidates_skipped_generated_duplicate':enq_stats['candidates_skipped_generated_duplicate']}
+        self.last_expansion={'bases_expanded':len(bases),'predictions_generated':gen,'candidates_enqueued':enq,'duplicates_skipped':dup,'rejected_candidates':rej,'generated_candidates_backend':enq_stats['generated_candidates_backend'],'persistent_generated_dedupe':enq_stats['persistent_generated_dedupe'],'candidates_skipped_generated_duplicate':enq_stats['candidates_skipped_generated_duplicate'],'candidates_skipped_batch_duplicate':enq_stats['candidates_skipped_batch_duplicate'],'candidates_enqueued_total':enq_stats['candidates_enqueued_total']}
         return self.last_expansion

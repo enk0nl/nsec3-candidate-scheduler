@@ -26,7 +26,15 @@ Generated-candidate dedupe settings for feedback arms:
 - `retain_completed_slices`: default `false`; completed active slice files are cleared rather than retained. Runtime-reached slices keep `slice_candidates.txt` and `active_slice.json` so they can resume.
 - `feedback_disk_warning_bytes`: default `104857600` (100 MiB), used to warn once for large feedback state files such as `queue.txt`, `slice_candidates.txt`, or legacy/audit `generated_candidates.txt`.
 
-SQLite is recommended for normal runs. The `text` backend preserves legacy behavior where `generated_candidates.txt` is the primary dedupe ledger, but it can consume significant disk and memory for large feedback arms. The `none` backend disables persistent generated-candidate dedupe and may duplicate historical generation work; current-batch, queued, active-slice, and already-cracked skips still apply where implemented by the arm.
+SQLite is recommended for normal runs. The `text` backend preserves legacy behavior where `generated_candidates.txt` is the primary dedupe ledger, but it can consume significant disk and memory for large feedback arms. The `none` backend disables persistent generated-candidate dedupe and avoids creating `generated_candidates.sqlite` or `generated_candidates.txt` entirely. It is useful for low-duplicate arms such as `predictive_prefix`, `predictive_suffix`, and `static_affix_feedback`, where avoiding generated-ledger disk and I/O cost can be worth the trade-off. With `generated_candidates_backend: "none"`, the same candidate may be regenerated or retested later from another base after it leaves the queue/slice unless it is already cracked; current-batch, queued, active-slice, and already-cracked skips still apply where implemented by the arm. `expanded_bases.txt` still prevents repeatedly expanding the same base.
+
+Recommended generated-candidate backends by feedback arm:
+
+- `predictive_prefix`: `generated_candidates_backend: "none"`
+- `predictive_suffix`: `generated_candidates_backend: "none"`
+- `static_affix_feedback`: `generated_candidates_backend: "none"`
+- `permutation`: `generated_candidates_backend: "sqlite"`
+- `parent_domain_feedback`: `generated_candidates_backend: "sqlite"`
 
 Default SQLite feedback arm example:
 
@@ -61,13 +69,32 @@ Legacy text dedupe backend:
 }
 ```
 
-No persistent generated-candidate dedupe:
+No persistent generated-candidate dedupe for low-duplicate arms:
 
 ```json
 {
-  "name": "feedback/permutation-numeric",
-  "type": "permutation",
-  "generated_candidates_backend": "none"
+  "name": "feedback/predictive-prefix",
+  "type": "predictive_prefix",
+  "generated_candidates_backend": "none",
+  "retain_completed_slices": false
+}
+```
+
+```json
+{
+  "name": "feedback/predictive-suffix",
+  "type": "predictive_suffix",
+  "generated_candidates_backend": "none",
+  "retain_completed_slices": false
+}
+```
+
+```json
+{
+  "name": "feedback/static-affix-top50",
+  "type": "static_affix_feedback",
+  "generated_candidates_backend": "none",
+  "retain_completed_slices": false
 }
 ```
 

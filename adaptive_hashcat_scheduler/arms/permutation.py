@@ -286,6 +286,7 @@ class PermutationArm(Arm):
         queued = set(q.load_queue())
         expanded = q.load_expanded_bases()
         metrics = self._empty_metrics()
+        metrics['candidates_skipped_batch_duplicate'] = 0
         numeric_to_enqueue: list[str] = []
         alpha_to_enqueue: list[str] = []
         expansion_seen: set[str] = set()
@@ -307,16 +308,26 @@ class PermutationArm(Arm):
                 metrics['permutation_patterns_matched'] += 1
                 for cand in self._numeric_candidates(name, match):
                     metrics['numeric_candidates_generated'] += 1
-                    if cand in queued or cand in expansion_seen:
+                    if cand in queued:
                         metrics['numeric_duplicates_skipped'] += 1
                         metrics['permutation_duplicates_skipped'] += 1
+                        continue
+                    if cand in expansion_seen:
+                        metrics['numeric_duplicates_skipped'] += 1
+                        metrics['permutation_duplicates_skipped'] += 1
+                        metrics['candidates_skipped_batch_duplicate'] += 1
                         continue
                     expansion_seen.add(cand); queued.add(cand); numeric_to_enqueue.append(cand)
                 for cand in self._alpha_candidates(name, match):
                     metrics['alpha_candidates_generated'] += 1
-                    if cand in queued or cand in expansion_seen:
+                    if cand in queued:
                         metrics['alpha_duplicates_skipped'] += 1
                         metrics['permutation_duplicates_skipped'] += 1
+                        continue
+                    if cand in expansion_seen:
+                        metrics['alpha_duplicates_skipped'] += 1
+                        metrics['permutation_duplicates_skipped'] += 1
+                        metrics['candidates_skipped_batch_duplicate'] += 1
                         continue
                     expansion_seen.add(cand); queued.add(cand); alpha_to_enqueue.append(cand)
                 expanded.add(key); expanded_keys.append(key)
@@ -330,9 +341,13 @@ class PermutationArm(Arm):
         metrics['numeric_duplicates_skipped'] += numeric_dup
         metrics['alpha_duplicates_skipped'] += alpha_dup
         metrics['permutation_duplicates_skipped'] += numeric_dup + alpha_dup
+        batch_dup = numeric_stats['candidates_skipped_batch_duplicate'] + alpha_stats['candidates_skipped_batch_duplicate']
         metrics['generated_candidates_backend'] = numeric_stats['generated_candidates_backend']
+        metrics['persistent_generated_dedupe'] = numeric_stats['persistent_generated_dedupe']
         metrics['candidates_skipped_generated_duplicate'] = numeric_dup + alpha_dup
+        metrics['candidates_skipped_batch_duplicate'] += batch_dup
         metrics['candidates_enqueued'] = metrics['numeric_candidates_enqueued'] + metrics['alpha_candidates_enqueued']
+        metrics['candidates_enqueued_total'] = metrics['candidates_enqueued']
         q.mark_bases_expanded(expanded_keys)
         self._write_cursor(context, {'pending_numeric_streams': 0, 'pending_alpha_streams': 0})
         self.last_expansion = metrics

@@ -46,3 +46,14 @@ def test_parent_domain_writes_state_under_feedback_dir(tmp_path, make_context, a
     arm.on_new_discoveries(['dev.api.test'], ctx)
     assert (tmp_path / 'feedback' / 'parent-domain' / 'queue.txt').exists()
     assert_no_root_feedback_files(tmp_path, 'parent-domain')
+
+
+def test_parent_domain_can_still_use_sqlite_backend(tmp_path, make_context):
+    ctx = make_context(tmp_path)
+    arm = ParentDomainFeedbackArm('parent-domain-sqlite', 'parent_domain_feedback', {'generated_candidates_backend': 'sqlite'})
+    metrics = arm.on_new_discoveries(['dev.api.test'], ctx)
+    state = arm._queue(ctx)
+    assert metrics['parent_candidates_enqueued'] == 2
+    assert metrics['generated_candidates_backend'] == 'sqlite'
+    assert metrics['persistent_generated_dedupe'] is True
+    assert state.generated_sqlite_path.exists()

@@ -43,6 +43,7 @@ class PredictiveFeedbackArm(Arm):
         expansion_seen: set[str] = set()
         to_enqueue, bases = [], []
         metrics = self._empty_metrics()
+        metrics['candidates_skipped_batch_duplicate'] = 0
         for raw in discoveries:
             name = normalize_dns_name(raw)
             if name is None:
@@ -62,15 +63,20 @@ class PredictiveFeedbackArm(Arm):
                 cand = normalize_dns_name(cand)
                 if cand is None:
                     metrics['rejected_candidates'] += 1; continue
-                if cand in queued or cand in expansion_seen:
+                if cand in queued:
                     metrics['duplicates_skipped'] += 1; continue
+                if cand in expansion_seen:
+                    metrics['duplicates_skipped'] += 1; metrics['candidates_skipped_batch_duplicate'] += 1; continue
                 expansion_seen.add(cand); queued.add(cand); to_enqueue.append(cand)
             expanded.add(base); bases.append(base); metrics['bases_expanded'] += 1
         enq_stats = q.enqueue_generated_candidates(to_enqueue)
         metrics['candidates_enqueued'] = enq_stats['candidates_enqueued']
         metrics['duplicates_skipped'] += enq_stats['candidates_skipped_generated_duplicate']
         metrics['generated_candidates_backend'] = enq_stats['generated_candidates_backend']
+        metrics['persistent_generated_dedupe'] = enq_stats['persistent_generated_dedupe']
         metrics['candidates_skipped_generated_duplicate'] = enq_stats['candidates_skipped_generated_duplicate']
+        metrics['candidates_skipped_batch_duplicate'] += enq_stats['candidates_skipped_batch_duplicate']
+        metrics['candidates_enqueued_total'] = enq_stats['candidates_enqueued_total']
         q.mark_bases_expanded(bases)
         self.last_expansion = metrics
         return {f'{self.name}_{k}': v for k, v in metrics.items()}

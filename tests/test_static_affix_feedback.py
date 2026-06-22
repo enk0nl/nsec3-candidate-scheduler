@@ -61,3 +61,24 @@ def test_static_affix_does_not_call_load_generated_candidates_in_sqlite_mode(tmp
     monkeypatch.setattr('adaptive_hashcat_scheduler.feedback.queue.FeedbackQueueState.load_generated_candidates', boom)
     metrics = arm.on_new_discoveries(['api.test'], ctx)
     assert metrics['static-affix-top50_candidates_enqueued'] == 3
+
+
+def test_static_affix_can_use_backend_none(tmp_path, make_context, write_lines):
+    ctx = make_context(tmp_path)
+    arm = _arm(tmp_path, write_lines, {'generated_candidates_backend': 'none'})
+    metrics = arm.on_new_discoveries(['api.test'], ctx)
+    state = arm._queue(ctx)
+    assert metrics['static-affix-top50_generated_candidates_backend'] == 'none'
+    assert metrics['static-affix-top50_persistent_generated_dedupe'] is False
+    assert metrics['static-affix-top50_candidates_enqueued'] == 3
+    assert not state.generated_sqlite_path.exists()
+    assert not state.generated_path.exists()
+
+
+def test_backend_none_still_skips_already_cracked(tmp_path, make_context, make_fake_potfile, write_lines):
+    pot = make_fake_potfile(tmp_path / 'run.pot', [('h1:.example.nl::0', 'dev.api.test')])
+    ctx = make_context(tmp_path, potfile=pot)
+    arm = _arm(tmp_path, write_lines, {'generated_candidates_backend': 'none'})
+    metrics = arm.on_new_discoveries(['api.test'], ctx)
+    assert metrics['static-affix-top50_affix_duplicates_already_cracked'] == 1
+    assert 'dev.api.test' not in arm._queue(ctx).load_queue()

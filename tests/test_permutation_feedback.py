@@ -81,3 +81,14 @@ def test_permutation_state_under_feedback_dir(tmp_path, make_context, assert_no_
     arm._queue(ctx)
     assert (tmp_path / 'feedback' / 'permutation' / 'cursor.json').exists()
     assert_no_root_feedback_files(tmp_path, 'permutation')
+
+
+def test_permutation_can_still_use_sqlite_backend(tmp_path, make_context):
+    ctx = make_context(tmp_path)
+    arm = PermutationArm('permutation-sqlite', 'permutation', {'generated_candidates_backend': 'sqlite', 'numeric': {'generate_full_range': False, 'local_radius': 1}})
+    metrics = arm.on_new_discoveries(['spf1'], ctx)
+    state = arm._queue(ctx)
+    assert metrics['generated_candidates_backend'] == 'sqlite'
+    assert metrics['persistent_generated_dedupe'] is True
+    assert metrics['candidates_enqueued'] > 0
+    assert state.generated_sqlite_path.exists()

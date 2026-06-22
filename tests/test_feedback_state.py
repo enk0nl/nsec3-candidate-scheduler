@@ -109,3 +109,50 @@ def test_generated_candidates_count_does_not_load_text_ledger(tmp_path, monkeypa
         raise AssertionError('full generated ledger load should not be used')
     monkeypatch.setattr(state, 'load_generated_candidates', boom)
     assert state.generated_candidates_count() == 1
+
+
+def test_backend_none_creates_no_generated_candidate_ledger(tmp_path):
+    state = FeedbackQueueState(tmp_path, 'none-arm', {'generated_candidates_backend': 'none'})
+    assert not state.generated_sqlite_path.exists()
+    assert not state.generated_path.exists()
+    state.enqueue_generated_candidates(['one.example'])
+    assert not state.generated_sqlite_path.exists()
+    assert not state.generated_path.exists()
+
+
+def test_backend_none_still_dedupes_current_batch(tmp_path, read_lines):
+    state = FeedbackQueueState(tmp_path, 'none-batch', {'generated_candidates_backend': 'none'})
+    stats = state.enqueue_generated_candidates(['dup.example', 'dup.example'])
+    assert stats['persistent_generated_dedupe'] is False
+    assert stats['candidates_skipped_batch_duplicate'] == 1
+    assert stats['candidates_skipped_generated_duplicate'] == 0
+    assert stats['candidates_enqueued_total'] == 1
+    assert read_lines(state.queue_path) == ['dup.example']
+
+
+def test_backend_none_ignores_legacy_generated_candidates_files(tmp_path, write_lines, read_lines):
+    root = tmp_path / 'feedback' / 'none-legacy'
+    root.mkdir(parents=True)
+    sqlite_path = root / 'generated_candidates.sqlite'
+    sqlite_path.write_bytes(b'legacy sqlite placeholder')
+    write_lines(root / 'generated_candidates.txt', ['old.example'])
+    state = FeedbackQueueState(tmp_path, 'none-legacy', {'generated_candidates_backend': 'none'})
+    stats = state.enqueue_generated_candidates(['old.example'])
+    assert stats['candidates_enqueued'] == 1
+    assert sqlite_path.exists()
+    assert read_lines(root / 'generated_candidates.txt') == ['old.example']
+
+
+def test_backend_none_warning_logged_once(tmp_path, capsys):
+    FeedbackQueueState(tmp_path, 'none-warning', {'generated_candidates_backend': 'none'})
+    FeedbackQueueState(tmp_path, 'none-warning', {'generated_candidates_backend': 'none'})
+    out = capsys.readouterr().out
+    assert out.count('persistent generated-candidate dedupe disabled') == 1
+
+
+def test_backend_none_warning_can_be_disabled(tmp_path, capsys):
+    FeedbackQueueState(tmp_path, 'none-warning-disabled', {
+        'generated_candidates_backend': 'none',
+        'warn_on_disabled_generated_dedupe': False,
+    })
+    assert 'persistent generated-candidate dedupe disabled' not in capsys.readouterr().out

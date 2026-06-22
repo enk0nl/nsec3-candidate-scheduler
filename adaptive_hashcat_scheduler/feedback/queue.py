@@ -29,6 +29,7 @@ class FeedbackQueueState:
         self.retain_generated_candidates_text = bool(self.config.get('retain_generated_candidates_text', False))
         self.sqlite_insert_batch_size = max(1, int(self.config.get('sqlite_insert_batch_size', 10000)))
         self.feedback_disk_warning_bytes = int(self.config.get('feedback_disk_warning_bytes', 104857600))
+        self.warn_on_disabled_generated_dedupe = bool(self.config.get('warn_on_disabled_generated_dedupe', True))
         self.safe_arm_name = safe_arm_name(arm_name)
         self.root = self.out_dir / 'feedback' / self.safe_arm_name
         self.queue_path = self.root / 'queue.txt'
@@ -39,7 +40,7 @@ class FeedbackQueueState:
         self.active_slice_path = self.root / 'active_slice.json'
         self.debug_expansions_path = self.root / 'debug_expansions.jsonl'
         self.root.mkdir(parents=True, exist_ok=True)
-        for p in (self.queue_path, self.expanded_path, self.slice_path, self.debug_expansions_path):
+        for p in (self.queue_path, self.expanded_path, self.slice_path):
             p.touch(exist_ok=True)
         if self.generated_candidates_backend == 'text' or self.retain_generated_candidates_text:
             self.generated_path.touch(exist_ok=True)
@@ -51,7 +52,10 @@ class FeedbackQueueState:
         elif self.generated_candidates_backend == 'text':
             self._warn_once('text-backend', f'[feedback] warning arm={self.arm_name} generated_candidates_backend=text may consume significant disk and memory')
         elif self.generated_candidates_backend == 'none':
-            self._warn_once('none-backend', f'[feedback] warning arm={self.arm_name} generated_candidates_backend=none disables persistent generated-candidate dedupe')
+            if self.warn_on_disabled_generated_dedupe:
+                self._warn_once('none-backend', f'[feedback] warning arm={self.arm_name} persistent generated-candidate dedupe disabled; duplicate generated work may occur')
+            if self.generated_path.exists() or self.generated_sqlite_path.exists():
+                self._warn_once('none-legacy', f'[feedback] ignoring existing generated-candidate ledger because backend=none arm={self.arm_name}')
         self.warn_large_state_files()
 
     def _warn_once(self, key: str, msg: str) -> None:
@@ -159,12 +163,16 @@ class FeedbackQueueState:
         self._append_lines(self.queue_path, items)
 
     def load_generated_candidates(self) -> set[str]:
+        if self.generated_candidates_backend == 'none':
+            return set()
         if self.generated_candidates_backend == 'sqlite':
             with self._connect_generated_sqlite() as conn:
                 return {str(row[0]) for row in conn.execute('SELECT candidate FROM generated_candidates')}
         return self._load_set(self.generated_path)
 
     def append_generated_candidates(self, items: Iterable[str]) -> None:
+        if self.generated_candidates_backend == 'none':
+            return
         if self.generated_candidates_backend == 'sqlite':
             new, _ = self.mark_generated_candidates(items)
             if self.retain_generated_candidates_text:
@@ -172,16 +180,32 @@ class FeedbackQueueState:
             return
         self._append_lines(self.generated_path, items)
 
-    def mark_generated_candidates(self, candidates: Iterable[str]) -> tuple[list[str], dict[str, Any]]:
+    def _generated_dedupe_stats(self, candidates_seen: int) -> dict[str, Any]:
+        return {
+            'generated_candidates_backend': self.generated_candidates_backend,
+            'persistent_generated_dedupe': self.generated_candidates_backend != 'none',
+            'candidates_seen': candidates_seen,
+            'candidates_new': 0,
+            'candidates_skipped_generated_duplicate': 0,
+            'candidates_skipped_batch_duplicate': 0,
+            'candidates_skipped_already_cracked': 0,
+        }
+
+    def mark_generated_candidates(self, candidates: Iterable[str], *, already_cracked: Iterable[str] | None = None) -> tuple[list[str], dict[str, Any]]:
         values = [str(c) for c in candidates if str(c)]
-        stats = {'generated_candidates_backend': self.generated_candidates_backend, 'candidates_seen': len(values), 'candidates_new': 0, 'candidates_skipped_generated_duplicate': 0}
+        stats = self._generated_dedupe_stats(len(values))
+        cracked = {str(c) for c in already_cracked or [] if str(c)}
         seen_batch: set[str] = set()
         ordered: list[str] = []
         for value in values:
             if value in seen_batch:
-                stats['candidates_skipped_generated_duplicate'] += 1
+                stats['candidates_skipped_batch_duplicate'] += 1
                 continue
-            seen_batch.add(value); ordered.append(value)
+            seen_batch.add(value)
+            if value in cracked:
+                stats['candidates_skipped_already_cracked'] += 1
+                continue
+            ordered.append(value)
         if self.generated_candidates_backend == 'none':
             stats['candidates_new'] = len(ordered)
             return ordered, stats
@@ -204,12 +228,13 @@ class FeedbackQueueState:
         stats['candidates_new'] = len(new)
         return new, stats
 
-    def enqueue_generated_candidates(self, candidates: Iterable[str]) -> dict[str, Any]:
-        new, stats = self.mark_generated_candidates(candidates)
+    def enqueue_generated_candidates(self, candidates: Iterable[str], *, already_cracked: Iterable[str] | None = None) -> dict[str, Any]:
+        new, stats = self.mark_generated_candidates(candidates, already_cracked=already_cracked)
         enqueued = self._append_lines(self.queue_path, new)
         if self.generated_candidates_backend == 'sqlite' and self.retain_generated_candidates_text:
             self._append_lines(self.generated_path, new)
         stats['candidates_enqueued'] = enqueued
+        stats['candidates_enqueued_total'] = enqueued
         return stats
 
     def append_candidates(self, candidates: Iterable[str]) -> int:

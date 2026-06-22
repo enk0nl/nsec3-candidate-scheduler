@@ -79,6 +79,7 @@ class StaticAffixFeedbackArm(Arm):
         to_enqueue: list[str] = []
         bases: list[str] = []
         metrics = self._empty_metrics()
+        metrics['candidates_skipped_batch_duplicate'] = 0
         gen_prefix = bool(self.config.get('generate_prefixes', True))
         gen_suffix = bool(self.config.get('generate_suffixes', True))
         for raw in discoveries:
@@ -112,7 +113,7 @@ class StaticAffixFeedbackArm(Arm):
                     metrics['affix_duplicates_queued'] += 1; metrics['duplicates_skipped'] += 1
                     continue
                 if cand in expansion_seen:
-                    metrics['affix_duplicates_generated'] += 1; metrics['duplicates_skipped'] += 1
+                    metrics['duplicates_skipped'] += 1; metrics['candidates_skipped_batch_duplicate'] += 1
                     continue
                 expansion_seen.add(cand); queued.add(cand)
                 to_enqueue.append(cand)
@@ -124,7 +125,10 @@ class StaticAffixFeedbackArm(Arm):
         metrics['affix_duplicates_generated'] += enq_stats['candidates_skipped_generated_duplicate']
         metrics['duplicates_skipped'] += enq_stats['candidates_skipped_generated_duplicate']
         metrics['generated_candidates_backend'] = enq_stats['generated_candidates_backend']
+        metrics['persistent_generated_dedupe'] = enq_stats['persistent_generated_dedupe']
         metrics['candidates_skipped_generated_duplicate'] = enq_stats['candidates_skipped_generated_duplicate']
+        metrics['candidates_skipped_batch_duplicate'] += enq_stats['candidates_skipped_batch_duplicate']
+        metrics['candidates_enqueued_total'] = enq_stats['candidates_enqueued_total']
         q.mark_bases_expanded(bases)
         self.last_expansion = metrics
         return {f'{self.name}_{k}': v for k, v in metrics.items()}
