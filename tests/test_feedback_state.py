@@ -143,16 +143,50 @@ def test_backend_none_ignores_legacy_generated_candidates_files(tmp_path, write_
     assert read_lines(root / 'generated_candidates.txt') == ['old.example']
 
 
-def test_backend_none_warning_logged_once(tmp_path, capsys):
-    FeedbackQueueState(tmp_path, 'none-warning', {'generated_candidates_backend': 'none'})
-    FeedbackQueueState(tmp_path, 'none-warning', {'generated_candidates_backend': 'none'})
+def test_backend_none_does_not_warn_in_normal_mode(tmp_path, capsys):
+    FeedbackQueueState(tmp_path, 'none-normal', {'generated_candidates_backend': 'none'})
     out = capsys.readouterr().out
-    assert out.count('persistent generated-candidate dedupe disabled') == 1
+    assert 'persistent generated-candidate dedupe disabled' not in out
+    assert 'duplicate generated work may occur' not in out
 
 
-def test_backend_none_warning_can_be_disabled(tmp_path, capsys):
-    FeedbackQueueState(tmp_path, 'none-warning-disabled', {
-        'generated_candidates_backend': 'none',
-        'warn_on_disabled_generated_dedupe': False,
-    })
-    assert 'persistent generated-candidate dedupe disabled' not in capsys.readouterr().out
+def test_backend_text_does_not_warn_in_normal_mode(tmp_path, capsys):
+    FeedbackQueueState(tmp_path, 'text-normal', {'generated_candidates_backend': 'text'})
+    out = capsys.readouterr().out
+    assert 'generated_candidates_backend=text may consume significant disk and memory' not in out
+    assert 'warning=disk_memory_heavy' not in out
+
+
+def test_backend_none_logs_config_in_verbose_mode(tmp_path, capsys):
+    FeedbackQueueState(tmp_path, 'none-verbose', {'generated_candidates_backend': 'none', 'verbose': True})
+    out = capsys.readouterr().out
+    assert 'generated_candidates_backend=none' in out
+    assert 'persistent_dedupe=false' in out
+    assert 'warning arm=' not in out
+
+
+def test_backend_text_logs_config_in_verbose_mode(tmp_path, capsys):
+    FeedbackQueueState(tmp_path, 'text-verbose', {'generated_candidates_backend': 'text', 'verbose': True})
+    out = capsys.readouterr().out
+    assert 'generated_candidates_backend=text' in out
+    assert 'persistent_dedupe=true' in out
+    assert 'warning=disk_memory_heavy' in out
+
+
+def test_disk_threshold_warning_still_prints_in_normal_mode(tmp_path, capsys):
+    root = tmp_path / 'feedback' / 'disk-warning'
+    root.mkdir(parents=True)
+    (root / 'queue.txt').write_text('x' * 32, encoding='utf-8')
+    FeedbackQueueState(tmp_path, 'disk-warning', {'feedback_disk_warning_bytes': 1})
+    out = capsys.readouterr().out
+    assert '[feedback] warning arm=disk-warning file=queue.txt' in out
+    assert 'exceeds feedback_disk_warning_bytes=1' in out
+
+
+def test_backend_policy_messages_are_not_emitted_as_runtime_warnings(tmp_path, capsys):
+    FeedbackQueueState(tmp_path, 'none-policy-normal', {'generated_candidates_backend': 'none'})
+    FeedbackQueueState(tmp_path, 'text-policy-normal', {'generated_candidates_backend': 'text'})
+    out = capsys.readouterr().out
+    assert 'persistent generated-candidate dedupe disabled' not in out
+    assert 'generated_candidates_backend=text may consume significant disk and memory' not in out
+    assert 'warning=disk_memory_heavy' not in out

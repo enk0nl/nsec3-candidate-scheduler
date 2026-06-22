@@ -29,7 +29,6 @@ class FeedbackQueueState:
         self.retain_generated_candidates_text = bool(self.config.get('retain_generated_candidates_text', False))
         self.sqlite_insert_batch_size = max(1, int(self.config.get('sqlite_insert_batch_size', 10000)))
         self.feedback_disk_warning_bytes = int(self.config.get('feedback_disk_warning_bytes', 104857600))
-        self.warn_on_disabled_generated_dedupe = bool(self.config.get('warn_on_disabled_generated_dedupe', True))
         self.safe_arm_name = safe_arm_name(arm_name)
         self.root = self.out_dir / 'feedback' / self.safe_arm_name
         self.queue_path = self.root / 'queue.txt'
@@ -49,14 +48,26 @@ class FeedbackQueueState:
         if self.generated_candidates_backend == 'sqlite':
             self._init_generated_sqlite()
             self._import_legacy_generated_candidates_if_needed()
-        elif self.generated_candidates_backend == 'text':
-            self._warn_once('text-backend', f'[feedback] warning arm={self.arm_name} generated_candidates_backend=text may consume significant disk and memory')
         elif self.generated_candidates_backend == 'none':
-            if self.warn_on_disabled_generated_dedupe:
-                self._warn_once('none-backend', f'[feedback] warning arm={self.arm_name} persistent generated-candidate dedupe disabled; duplicate generated work may occur')
-            if self.generated_path.exists() or self.generated_sqlite_path.exists():
-                self._warn_once('none-legacy', f'[feedback] ignoring existing generated-candidate ledger because backend=none arm={self.arm_name}')
+            if self._feedback_config_debug_enabled() and (self.generated_path.exists() or self.generated_sqlite_path.exists()):
+                self._warn_once('none-legacy', f'[feedback] arm={self.arm_name} generated_candidates_backend=none ignoring_existing_generated_candidate_ledger=true')
+        self._log_backend_policy()
         self.warn_large_state_files()
+
+    def _feedback_config_debug_enabled(self) -> bool:
+        return any(bool(self.config.get(key, False)) for key in ('verbose', 'debug', 'debug_startup', 'debug_arms', 'debug_feedback', 'config_debug'))
+
+    def _log_backend_policy(self) -> None:
+        if not self._feedback_config_debug_enabled():
+            return
+        backend = self.generated_candidates_backend
+        persistent = 'true' if backend != 'none' else 'false'
+        if backend == 'sqlite':
+            self._warn_once('backend-policy', f'[feedback] arm={self.arm_name} generated_candidates_backend=sqlite persistent_dedupe=true sqlite={self.generated_sqlite_path}')
+        elif backend == 'text':
+            self._warn_once('backend-policy', f'[feedback] arm={self.arm_name} generated_candidates_backend=text persistent_dedupe=true warning=disk_memory_heavy')
+        else:
+            self._warn_once('backend-policy', f'[feedback] arm={self.arm_name} generated_candidates_backend=none persistent_dedupe={persistent}')
 
     def _warn_once(self, key: str, msg: str) -> None:
         marker = (self.safe_arm_name, key)
@@ -72,8 +83,9 @@ class FeedbackQueueState:
                 continue
             if size <= self.feedback_disk_warning_bytes:
                 continue
+            backend = f' generated_candidates_backend={self.generated_candidates_backend}' if path.name == 'generated_candidates.txt' else ''
             suffix = '; consider generated_candidates_backend=sqlite' if path.name == 'generated_candidates.txt' else ''
-            self._warn_once(f'large:{path.name}', f'[feedback] warning arm={self.arm_name} file={path.name} size={size}{suffix}')
+            self._warn_once(f'large:{path.name}', f'[feedback] warning arm={self.arm_name}{backend} file={path.name} size={size} exceeds feedback_disk_warning_bytes={self.feedback_disk_warning_bytes}{suffix}')
 
     def _connect_generated_sqlite(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.generated_sqlite_path)
