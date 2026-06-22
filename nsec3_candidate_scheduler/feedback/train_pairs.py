@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import DefaultDict, Iterable, TextIO
 import sys
 
-from adaptive_hashcat_scheduler.feedback.normalize import normalize_dns_name
+from nsec3_candidate_scheduler.feedback.normalize import normalize_dns_name
 
 Counts = DefaultDict[str, Counter[str]]
 

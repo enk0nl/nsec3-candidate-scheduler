@@ -1,7 +1,7 @@
 import argparse
 import json
 
-from adaptive_hashcat_scheduler.scheduler import run_scheduler
+from nsec3_candidate_scheduler.scheduler import run_scheduler
 
 
 def _fake_dictionary_run_cmd(cmd):
@@ -25,7 +25,7 @@ def _fake_dictionary_run_cmd(cmd):
 
 
 def _run_scheduler_with_wordlists(tmp_path, monkeypatch, *, warmup_scoring='arm_local', seclists_values=None, pcfg_values=None, extra_arms=None, total_slices=2):
-    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.dictionary.run_cmd', _fake_dictionary_run_cmd)
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.dictionary.run_cmd', _fake_dictionary_run_cmd)
     seclists = tmp_path / 'seclists.txt'; pcfg = tmp_path / 'pcfg.txt'
     seclists.write_text('\n'.join(seclists_values or ['www', 'test1', 'test2']) + '\n', encoding='utf-8')
     pcfg.write_text('\n'.join(pcfg_values or ['www', 'test2', 'test3']) + '\n', encoding='utf-8')

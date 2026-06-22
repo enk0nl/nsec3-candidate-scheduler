@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterator, Tuple
 
-from adaptive_hashcat_scheduler.feedback.normalize import normalize_dns_name
+from nsec3_candidate_scheduler.feedback.normalize import normalize_dns_name
 
 
 def iter_potfile_cracks(path) -> Iterator[Tuple[str, str]]:

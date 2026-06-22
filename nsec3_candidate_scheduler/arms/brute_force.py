@@ -3,9 +3,9 @@ from __future__ import annotations
 import math
 import os
 
-from adaptive_hashcat_scheduler.arms.base import Arm, SliceResult
-from adaptive_hashcat_scheduler.hashcat.runner import build_hashcat_command, run_cmd
-from adaptive_hashcat_scheduler.hashcat.status import latest_summary
+from nsec3_candidate_scheduler.arms.base import Arm, SliceResult
+from nsec3_candidate_scheduler.hashcat.runner import build_hashcat_command, run_cmd
+from nsec3_candidate_scheduler.hashcat.status import latest_summary
 
 _BUILTIN_CHARSET_SIZES = {
     'l': 26,

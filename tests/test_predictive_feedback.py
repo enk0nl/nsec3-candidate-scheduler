@@ -1,6 +1,6 @@
-from adaptive_hashcat_scheduler.arms.feedback_predictive import PredictiveFeedbackArm
-from adaptive_hashcat_scheduler.feedback.execution import run_feedback_dictionary_slice
-from adaptive_hashcat_scheduler.feedback.train_pairs import train_directional_pairs, write_counts_tsv
+from nsec3_candidate_scheduler.arms.feedback_predictive import PredictiveFeedbackArm
+from nsec3_candidate_scheduler.feedback.execution import run_feedback_dictionary_slice
+from nsec3_candidate_scheduler.feedback.train_pairs import train_directional_pairs, write_counts_tsv
 
 
 def test_predictive_prefix_learns_right_to_left_pairs(tmp_path, write_lines):

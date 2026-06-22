@@ -1,8 +1,8 @@
 import json
 
-from adaptive_hashcat_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
-from adaptive_hashcat_scheduler.arms.static_affix_feedback import StaticAffixFeedbackArm
-from adaptive_hashcat_scheduler.feedback.execution import run_feedback_dictionary_slice
+from nsec3_candidate_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
+from nsec3_candidate_scheduler.arms.static_affix_feedback import StaticAffixFeedbackArm
+from nsec3_candidate_scheduler.feedback.execution import run_feedback_dictionary_slice
 from tests.test_scheduler_scoring import _run_scheduler_with_wordlists
 
 
@@ -11,7 +11,7 @@ def test_feedback_job_contains_required_fields(monkeypatch, tmp_path, make_conte
     arm = ParentDomainFeedbackArm('parent-domain', 'parent_domain_feedback', {})
     state = arm._queue(ctx)
     state.write_queue(['api.test', 'test'])
-    monkeypatch.setattr('adaptive_hashcat_scheduler.feedback.execution.run_cmd', lambda cmd: (1, '', ''))
+    monkeypatch.setattr('nsec3_candidate_scheduler.feedback.execution.run_cmd', lambda cmd: (1, '', ''))
     result = run_feedback_dictionary_slice(arm, ctx)
     for field in [
         'feedback_state_dir', 'queue_size_before_slice', 'queue_size_after_slice', 'candidates_written_to_slice',

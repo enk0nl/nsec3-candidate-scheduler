@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from adaptive_hashcat_scheduler.arms.base import Arm, SliceResult
+from nsec3_candidate_scheduler.arms.base import Arm, SliceResult
 
 
 def write_lines(path: str | Path, values) -> None:

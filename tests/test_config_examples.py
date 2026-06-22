@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 
-from adaptive_hashcat_scheduler.config import load_config
+from nsec3_candidate_scheduler.config import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = ROOT / 'example_config.json'
@@ -99,7 +99,7 @@ def test_example_config_does_not_reference_bundled_model_paths():
     ]:
         assert path not in config_text
     assert '/path/to/prefix_pairs.tsv' in config_text
-    assert '/path/to/common_prefixes_top50.txt' in config_text
+    assert '/path/to/common_prefixes_top5000.txt' in config_text
 
 
 def test_model_dependent_arms_disabled_by_default():
@@ -116,3 +116,81 @@ def test_docs_explain_model_files_are_not_bundled():
     assert 'Predictive feedback arms require trained adjacent-label pair models' in docs
     assert 'static-affix feedback arms require mined prefix/suffix files' in docs
     assert 'disabled by default' in docs
+
+
+def test_unknown_enabled_arm_type_fails_config_validation(tmp_path):
+    p = tmp_path / 'config.json'
+    p.write_text(json.dumps({'arms': [{'name': 'osint/subfinder', 'type': 'subfinder_osint_typo', 'enabled': True}]}), encoding='utf-8')
+    import pytest
+    with pytest.raises(ValueError, match='unknown arm type'):
+        load_config(str(p))
+
+
+def test_unknown_disabled_arm_type_fails_config_validation(tmp_path):
+    p = tmp_path / 'config.json'
+    p.write_text(json.dumps({'arms': [{'name': 'osint/subfinder', 'type': 'subfinder_osint_typo', 'enabled': False}]}), encoding='utf-8')
+    import pytest
+    with pytest.raises(ValueError, match='unknown arm type'):
+        load_config(str(p))
+
+
+def test_disabled_placeholder_model_path_does_not_fail_resource_validation(tmp_path):
+    p = tmp_path / 'config.json'
+    p.write_text(json.dumps({'arms': [{'name': 'feedback/predictive-prefix', 'type': 'predictive_prefix', 'enabled': False, 'model': '/path/to/prefix_pairs.tsv'}]}), encoding='utf-8')
+    assert load_config(str(p))['arms'] == []
+
+
+def test_duplicate_arm_names_fail_config_validation(tmp_path):
+    p = tmp_path / 'config.json'
+    p.write_text(json.dumps({'arms': [
+        {'name': 'wordlist/seclists', 'type': 'dictionary', 'enabled': False, 'wordlist': '/x'},
+        {'name': 'wordlist/seclists', 'type': 'dictionary', 'enabled': False, 'wordlist': '/y'},
+    ]}), encoding='utf-8')
+    import pytest
+    with pytest.raises(ValueError, match='duplicate arm name'):
+        load_config(str(p))
+
+
+def test_invalid_grouped_arm_name_fails(tmp_path):
+    p = tmp_path / 'config.json'
+    p.write_text(json.dumps({'arms': [{'name': 'feedback//x', 'type': 'parent_domain_feedback', 'enabled': False}]}), encoding='utf-8')
+    import pytest
+    with pytest.raises(ValueError, match='empty path segments'):
+        load_config(str(p))
+
+
+def test_example_config_uses_canonical_names():
+    names = {arm['name'] for arm in _example_json()['arms']}
+    assert {'wordlist/seclists', 'wordlist/pcfg-100m', 'bruteforce/rfc1035-len2-5', 'feedback/predictive-prefix', 'feedback/parent-domain', 'osint/amass', 'osint/subfinder'} <= names
+
+
+def test_example_config_has_no_mismatched_candidate_count():
+    text = EXAMPLE_CONFIG.read_text(encoding='utf-8')
+    assert 'rfc1035_pcfg_top8843709.txt' not in text or '100000000' not in text
+
+
+def test_safe_name_examples():
+    from nsec3_candidate_scheduler.naming import safe_name, arm_family, arm_short_name
+    assert safe_name('wordlist/seclists') == 'wordlist-seclists'
+    assert safe_name('wordlist/pcfg-1b') == 'wordlist-pcfg-1b'
+    assert safe_name('feedback/predictive-prefix') == 'feedback-predictive-prefix'
+    assert safe_name('feedback/static-affix-top5000') == 'feedback-static-affix-top5000'
+    assert safe_name('osint/amass') == 'osint-amass'
+    assert safe_name('../bad/name') == 'bad-name'
+    assert arm_family('feedback/predictive-prefix') == 'feedback'
+    assert arm_short_name('feedback/predictive-prefix') == 'predictive-prefix'
+
+
+def test_docs_reference_canonical_names_and_no_removed_osint_generated_candidates():
+    docs = '\n'.join(path.read_text(encoding='utf-8') for path in [README, DOCS_CONFIG, ROOT / 'docs' / 'state-and-logs.md', ROOT / 'docs' / 'feedback.md', ROOT / 'docs' / 'osint.md'])
+    assert 'feedback/predictive-prefix' in docs
+    assert 'feedback/parent-domain' in docs
+    assert 'osint/amass' in docs
+    assert 'parent-domain_seen_candidates.txt' not in docs
+    assert 'OSINT arms do not write `generated_candidates.txt` by default' in docs
+
+
+def test_config_docs_mention_all_arm_types():
+    docs = DOCS_CONFIG.read_text(encoding='utf-8')
+    for arm_type in ['dictionary', 'brute_force', 'feedback', 'predictive_prefix', 'predictive_suffix', 'permutation', 'static_affix_feedback', 'parent_domain_feedback', 'amass_osint', 'subfinder_osint']:
+        assert arm_type in docs

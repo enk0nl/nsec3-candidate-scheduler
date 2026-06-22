@@ -1,11 +1,11 @@
 from __future__ import annotations
 from typing import Any
 
-from adaptive_hashcat_scheduler.arms.base import Arm, SliceResult
-from adaptive_hashcat_scheduler.feedback.normalize import normalize_dns_name, leftmost_label
-from adaptive_hashcat_scheduler.feedback.predictive_model import PredictiveModel
-from adaptive_hashcat_scheduler.feedback.queue import FeedbackQueueState
-from adaptive_hashcat_scheduler.feedback.execution import run_feedback_dictionary_slice
+from nsec3_candidate_scheduler.arms.base import Arm, SliceResult
+from nsec3_candidate_scheduler.feedback.normalize import normalize_dns_name, leftmost_label
+from nsec3_candidate_scheduler.feedback.predictive_model import PredictiveModel
+from nsec3_candidate_scheduler.feedback.queue import FeedbackQueueState
+from nsec3_candidate_scheduler.feedback.execution import run_feedback_dictionary_slice
 
 class PredictiveFeedbackArm(Arm):
     def __init__(self, name: str, arm_type: str, config: dict[str, Any]):

@@ -1,5 +1,5 @@
-from adaptive_hashcat_scheduler.feedback.normalize import normalize_dns_name
-from adaptive_hashcat_scheduler.hashcat.potfile import iter_potfile_cracks
+from nsec3_candidate_scheduler.feedback.normalize import normalize_dns_name
+from nsec3_candidate_scheduler.hashcat.potfile import iter_potfile_cracks
 
 
 def test_potfile_parser_uses_rsplit(tmp_path, make_fake_potfile):

@@ -1,23 +1,13 @@
 from __future__ import annotations
 from dataclasses import dataclass
-import datetime as dt, json, os, random, re, shutil, time
+import datetime as dt, json, os, random, shutil, time
 from typing import Any
 
-FEEDBACK_TYPES = {'feedback', 'predictive_prefix', 'predictive_suffix', 'permutation', 'static_affix_feedback', 'parent_domain_feedback'}
-OSINT_TYPES = {'amass_osint', 'subfinder_osint'}
-
-from adaptive_hashcat_scheduler.config import load_config
-from adaptive_hashcat_scheduler.hashcat.potfile import iter_potfile_cracks
-from adaptive_hashcat_scheduler.hashcat.runner import EXIT_MEANINGS
-from adaptive_hashcat_scheduler.arms.dictionary import DictionaryArm
-from adaptive_hashcat_scheduler.arms.brute_force import BruteForceArm
-from adaptive_hashcat_scheduler.arms.feedback_common import CommonFeedbackArm
-from adaptive_hashcat_scheduler.arms.feedback_predictive import PredictiveFeedbackArm
-from adaptive_hashcat_scheduler.arms.permutation import PermutationArm
-from adaptive_hashcat_scheduler.arms.static_affix_feedback import StaticAffixFeedbackArm
-from adaptive_hashcat_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
-from adaptive_hashcat_scheduler.arms.amass_osint import AmassOsintArm
-from adaptive_hashcat_scheduler.arms.subfinder_osint import SubfinderOsintArm
+from nsec3_candidate_scheduler.config import load_config
+from nsec3_candidate_scheduler.hashcat.potfile import iter_potfile_cracks
+from nsec3_candidate_scheduler.hashcat.runner import EXIT_MEANINGS
+from nsec3_candidate_scheduler.arms.registry import FEEDBACK_TYPES, OSINT_TYPES, make_arm
+from nsec3_candidate_scheduler.naming import safe_name, arm_family, arm_short_name
 
 @dataclass
 class SchedulerContext:
@@ -33,9 +23,6 @@ def pot_values(path):
     return {h:v for h,v in iter_potfile_cracks(path)}
 
 
-def _safe_potfile_stem(name: str) -> str:
-    safe = re.sub(r'[^A-Za-z0-9._-]+', '_', name).strip('._')
-    return safe or 'arm'
 
 def _copy_potfile_baseline(source: str, dest: str) -> None:
     ensure_dir(os.path.dirname(dest))
@@ -50,19 +37,6 @@ def _append_potfile_pairs(path: str, pairs: list[tuple[str, str]]) -> None:
     with open(path, 'a', encoding='utf-8') as f:
         for h, value in pairs:
             f.write(f'{h}:{value}\n')
-
-def make_arm(cfg):
-    t=cfg['type']; name=cfg['name']
-    if t=='dictionary': return DictionaryArm(name,t,cfg)
-    if t=='brute_force': return BruteForceArm(name,t,cfg)
-    if t=='feedback': return CommonFeedbackArm(name,t,cfg)
-    if t in {'predictive_prefix','predictive_suffix'}: return PredictiveFeedbackArm(name,t,cfg)
-    if t=='permutation': return PermutationArm(name,t,cfg)
-    if t=='static_affix_feedback': return StaticAffixFeedbackArm(name,t,cfg)
-    if t=='parent_domain_feedback': return ParentDomainFeedbackArm(name,t,cfg)
-    if t=='amass_osint': return AmassOsintArm(name,t,cfg)
-    if t=='subfinder_osint': return SubfinderOsintArm(name,t,cfg)
-    raise ValueError(f'unknown arm type: {t}')
 
 def _feedback_pending_virtual_streams(arm, context) -> int:
     counter = getattr(arm, 'pending_virtual_stream_count', None)
@@ -337,13 +311,14 @@ def run_scheduler(args) -> int:
             use_arm_local = phase == 'warmup' and warmup_scoring == 'arm_local'
             arm_local_potfile = None
             if use_arm_local:
-                arm_local_potfile = os.path.join(warmup_potfiles_dir, f'{_safe_potfile_stem(arm.name)}.potfile')
+                arm_local_potfile = os.path.join(warmup_potfiles_dir, f'{safe_name(arm.name)}.potfile')
                 _copy_potfile_baseline(warmup_baseline_potfile, arm_local_potfile)
                 ctx.potfile_path_override = arm_local_potfile
             else:
                 ctx.potfile_path_override = None
-            score_before=arm.score; t0=time.time(); res=arm.run_slice(ctx); res.runtime_seconds=max(0.0,time.time()-t0)
-            ctx.potfile_path_override = None
+            score_before=arm.score; requested_slice_seconds=int(arm.config.get('slice_seconds', args.slice_seconds)); original_slice_seconds=ctx.slice_seconds; ctx.slice_seconds=requested_slice_seconds
+            t0=time.time(); res=arm.run_slice(ctx); res.runtime_seconds=max(0.0,time.time()-t0)
+            ctx.slice_seconds=original_slice_seconds; ctx.potfile_path_override = None
             if not res.executed:
                 skipped_this_completed_slice.add(arm.name)
                 if console_mode == 'verbose':
@@ -386,7 +361,7 @@ def run_scheduler(args) -> int:
             if console_mode == 'verbose':
                 for unavailable in getattr(choose_arm, 'unavailable', []):
                     print('Unavailable arm: '+json.dumps(unavailable,separators=(',',':')), flush=True)
-            rec={'timestamp':utc_now(),'job_id':job,'phase':phase,'arm':arm.name,'attack_type':arm.type,'selection_reason':reason,
+            rec={'timestamp':utc_now(),'job_id':job,'phase':phase,'arm':arm.name,'arm_family':arm_family(arm.name),'arm_short_name':arm_short_name(arm.name),'arm_type':arm.type,'attack_type':arm.type,'selection_reason':reason,'requested_slice_seconds':requested_slice_seconds,
                  'skip_before':res.skip_before,'next_skip_after':res.next_skip_after,'runtime_seconds':res.runtime_seconds,
                  'exit_code':res.exit_code,'exit_meaning':EXIT_MEANINGS.get(res.exit_code,'error'),'execution_status':res.execution_status,'valid_work':valid_work,'progress_source':res.progress_source,
                  'hashcat_optimized_kernels':ctx.hashcat_optimized_kernels,'hashcat_optimized_kernel_hint':optimized_hint,

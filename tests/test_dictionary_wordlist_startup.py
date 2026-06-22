@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from adaptive_hashcat_scheduler.arms.dictionary import DictionaryArm
+from nsec3_candidate_scheduler.arms.dictionary import DictionaryArm
 
 
 def test_wordlist_arm_does_not_count_lines_by_default(tmp_path, monkeypatch, write_lines):
@@ -16,7 +16,7 @@ def test_wordlist_arm_does_not_count_lines_by_default(tmp_path, monkeypatch, wri
     def fail_count_lines(path):
         raise AssertionError('line counting should not be called by default')
 
-    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.dictionary.count_lines', fail_count_lines)
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.dictionary.count_lines', fail_count_lines)
 
     arm = DictionaryArm('pcfg', 'dictionary', {'wordlist': str(wordlist)})
 
@@ -59,10 +59,10 @@ def test_large_wordlist_counting_warns_when_enabled(tmp_path, monkeypatch, caplo
     write_lines(wordlist, ['alpha'])
 
     monkeypatch.setattr(
-        'adaptive_hashcat_scheduler.arms.dictionary.DictionaryArm._validate_wordlist_metadata',
+        'nsec3_candidate_scheduler.arms.dictionary.DictionaryArm._validate_wordlist_metadata',
         staticmethod(lambda path: 1_073_741_824),
     )
-    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.dictionary.count_lines', lambda path: 1)
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.dictionary.count_lines', lambda path: 1)
 
     with caplog.at_level(logging.WARNING):
         DictionaryArm(
@@ -83,8 +83,8 @@ def test_unknown_candidate_count_does_not_break_hashcat_command(tmp_path, monkey
         seen['cmd'] = cmd
         return 1, '', ''
 
-    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.dictionary.run_cmd', fake_run_cmd)
-    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.dictionary.latest_summary', lambda text: {})
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.dictionary.run_cmd', fake_run_cmd)
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.dictionary.latest_summary', lambda text: {})
 
     result = arm.run_slice(make_context(tmp_path))
 
@@ -98,9 +98,9 @@ def test_progress_accounting_handles_unknown_total(tmp_path, monkeypatch, make_c
     write_lines(wordlist, ['alpha', 'beta'])
     arm = DictionaryArm('pcfg', 'dictionary', {'wordlist': str(wordlist)})
 
-    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.dictionary.run_cmd', lambda cmd: (4, '', ''))
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.dictionary.run_cmd', lambda cmd: (4, '', ''))
     monkeypatch.setattr(
-        'adaptive_hashcat_scheduler.arms.dictionary.latest_summary',
+        'nsec3_candidate_scheduler.arms.dictionary.latest_summary',
         lambda text: {'progress_cur': 9, 'recovered_salts_total': 2},
     )
 
@@ -135,7 +135,7 @@ def test_candidate_count_config_override_prevents_line_count(tmp_path, monkeypat
     def fail_count_lines(path):
         raise AssertionError('manual candidate_count should prevent line counting')
 
-    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.dictionary.count_lines', fail_count_lines)
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.dictionary.count_lines', fail_count_lines)
 
     arm = DictionaryArm(
         'rfc1035_pcfg', 'dictionary',
@@ -165,7 +165,7 @@ def test_candidate_count_counted_when_enabled_and_no_override(tmp_path, monkeypa
         calls.append(path)
         return 7
 
-    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.dictionary.count_lines', fake_count_lines)
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.dictionary.count_lines', fake_count_lines)
 
     arm = DictionaryArm('seclists', 'dictionary', {'wordlist': str(wordlist), 'count_candidates_at_startup': True})
 
@@ -188,7 +188,7 @@ def test_invalid_candidate_count_fails_validation(tmp_path, write_lines, candida
         }],
     }), encoding='utf-8')
 
-    from adaptive_hashcat_scheduler.config import load_config
+    from nsec3_candidate_scheduler.config import load_config
     with pytest.raises(ValueError, match='candidate_count for arm .* must be a positive integer'):
         load_config(str(config))
 

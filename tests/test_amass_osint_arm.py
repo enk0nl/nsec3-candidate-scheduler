@@ -4,8 +4,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from adaptive_hashcat_scheduler.arms.amass_osint import AmassOsintArm, extract_candidates, parse_domains
-from adaptive_hashcat_scheduler.scheduler import SchedulerContext, choose_arm
+from nsec3_candidate_scheduler.arms.amass_osint import AmassOsintArm, extract_candidates, parse_domains
+from nsec3_candidate_scheduler.scheduler import SchedulerContext, choose_arm
 
 
 def arm(tmp_path, domains='example.nl', **cfg):
@@ -56,7 +56,7 @@ def test_amass_osint_not_available_while_running(tmp_path, monkeypatch):
 def test_amass_osint_fetches_subs_after_process_completion(tmp_path, monkeypatch):
     popen = Mock(); popen.pid = 123; popen.poll.return_value = 0
     monkeypatch.setattr(subprocess, 'Popen', Mock(return_value=popen))
-    rc = Mock(return_value=(0, 'sub.example.nl\n', '')); monkeypatch.setattr('adaptive_hashcat_scheduler.arms.amass_osint.run_cmd', rc)
+    rc = Mock(return_value=(0, 'sub.example.nl\n', '')); monkeypatch.setattr('nsec3_candidate_scheduler.arms.amass_osint.run_cmd', rc)
     a = arm(tmp_path); c = ctx(tmp_path); a.start(c); a.poll(c)
     rc.assert_called_once_with(['/home/vboxuser/go/bin/amass', 'subs', '-names', '-d', 'example.nl'])
 
@@ -64,7 +64,7 @@ def test_amass_osint_fetches_subs_after_process_completion(tmp_path, monkeypatch
 def test_amass_osint_fetches_subs_once_for_multiple_domains(tmp_path, monkeypatch):
     popen = Mock(); popen.pid = 123; popen.poll.return_value = 0
     monkeypatch.setattr(subprocess, 'Popen', Mock(return_value=popen))
-    rc = Mock(return_value=(0, 'www.example.nl\nwww.example.com\n', '')); monkeypatch.setattr('adaptive_hashcat_scheduler.arms.amass_osint.run_cmd', rc)
+    rc = Mock(return_value=(0, 'www.example.nl\nwww.example.com\n', '')); monkeypatch.setattr('nsec3_candidate_scheduler.arms.amass_osint.run_cmd', rc)
     a = arm(tmp_path, 'example.nl,example.com'); c = ctx(tmp_path); a.start(c); a.poll(c)
     rc.assert_called_once_with(['/home/vboxuser/go/bin/amass', 'subs', '-names', '-d', 'example.nl,example.com'])
 
@@ -103,7 +103,7 @@ def test_amass_osint_respects_include_multi_label_false():
 def complete(tmp_path, monkeypatch, output='sub.example.nl\n', domains='example.nl', **cfg):
     popen = Mock(); popen.pid = 123; popen.poll.return_value = 0
     monkeypatch.setattr(subprocess, 'Popen', Mock(return_value=popen))
-    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.amass_osint.run_cmd', Mock(return_value=(0, output, '')))
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.amass_osint.run_cmd', Mock(return_value=(0, output, '')))
     a = arm(tmp_path, domains, **cfg); c = ctx(tmp_path); a.start(c); a.poll(c); return a, c
 
 
@@ -139,7 +139,7 @@ def test_amass_osint_failed_on_nonzero_exit(tmp_path, monkeypatch):
 def test_amass_osint_uses_dictionary_hashcat_execution_when_ready(tmp_path, monkeypatch):
     a, c = complete(tmp_path, monkeypatch)
     run = Mock(return_value=(4, '{"status":4,"progress":[1,1],"recovered_salts":[1,1]}', ''))
-    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.amass_osint.run_cmd', run)
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.amass_osint.run_cmd', run)
     a.run_slice(c)
     cmd = run.call_args.args[0]
     assert str(tmp_path / 'osint' / 'amass-osint' / 'candidates.txt') == cmd[-1]
@@ -185,13 +185,13 @@ def test_scheduler_prioritizes_amass_first_run_before_highest_score(tmp_path):
 
 def test_amass_first_run_pending_cleared_after_valid_execution(tmp_path, monkeypatch):
     a, c = complete(tmp_path, monkeypatch)
-    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.amass_osint.run_cmd', Mock(return_value=(4, '', '')))
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.amass_osint.run_cmd', Mock(return_value=(4, '', '')))
     a.run_slice(c); assert not a.first_run_pending
 
 
 def test_amass_first_run_pending_not_cleared_after_failed_no_progress(tmp_path, monkeypatch):
     a, c = complete(tmp_path, monkeypatch)
-    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.amass_osint.run_cmd', Mock(return_value=(99, '', '')))
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.amass_osint.run_cmd', Mock(return_value=(99, '', '')))
     a.run_slice(c); assert a.first_run_pending
 
 

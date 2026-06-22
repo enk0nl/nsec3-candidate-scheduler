@@ -1,12 +1,12 @@
 import json
 
-from adaptive_hashcat_scheduler.arms.brute_force import BruteForceArm
-from adaptive_hashcat_scheduler.arms.dictionary import DictionaryArm
-from adaptive_hashcat_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
-from adaptive_hashcat_scheduler.arms.permutation import PermutationArm
-from adaptive_hashcat_scheduler.arms.static_affix_feedback import StaticAffixFeedbackArm
-from adaptive_hashcat_scheduler.config import load_config
-from adaptive_hashcat_scheduler.scheduler import make_arm
+from nsec3_candidate_scheduler.arms.brute_force import BruteForceArm
+from nsec3_candidate_scheduler.arms.dictionary import DictionaryArm
+from nsec3_candidate_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
+from nsec3_candidate_scheduler.arms.permutation import PermutationArm
+from nsec3_candidate_scheduler.arms.static_affix_feedback import StaticAffixFeedbackArm
+from nsec3_candidate_scheduler.config import load_config
+from nsec3_candidate_scheduler.scheduler import make_arm
 
 
 def test_feedback_arms_not_warmup_eligible(tmp_path, write_lines):

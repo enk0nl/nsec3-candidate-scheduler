@@ -1,4 +1,4 @@
-from adaptive_hashcat_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
+from nsec3_candidate_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
 
 
 def test_parent_domain_generates_all_parents():

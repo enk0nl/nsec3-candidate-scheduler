@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
@@ -9,11 +8,12 @@ from typing import Any, Iterable
 
 _WARNED: set[tuple[str, str]] = set()
 
+from nsec3_candidate_scheduler.naming import safe_name
+
 
 def safe_arm_name(name: str) -> str:
-    safe = re.sub(r'[^A-Za-z0-9._-]+', '-', str(name).replace('/', '-').replace('\\', '-'))
-    safe = re.sub(r'-+', '-', safe).strip('-._')
-    return safe or 'arm'
+    """Legacy alias; use nsec3_candidate_scheduler.naming.safe_name in new code."""
+    return safe_name(name)
 
 
 class FeedbackQueueState:

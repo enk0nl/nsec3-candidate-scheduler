@@ -3,11 +3,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from adaptive_hashcat_scheduler.config import load_config
-from adaptive_hashcat_scheduler.arms.subfinder_osint import SubfinderOsintArm
-from adaptive_hashcat_scheduler.arms.osint_common import extract_relative_osint_candidates
-from adaptive_hashcat_scheduler.arms.amass_osint import extract_candidates as amass_extract_candidates
-from adaptive_hashcat_scheduler.scheduler import SchedulerContext, choose_arm
+from nsec3_candidate_scheduler.config import load_config
+from nsec3_candidate_scheduler.arms.subfinder_osint import SubfinderOsintArm
+from nsec3_candidate_scheduler.arms.osint_common import extract_relative_osint_candidates
+from nsec3_candidate_scheduler.arms.amass_osint import extract_candidates as amass_extract_candidates
+from nsec3_candidate_scheduler.scheduler import SchedulerContext, choose_arm
 
 
 def cfg(**kw):
@@ -102,7 +102,7 @@ def test_subfinder_osint_respects_max_candidates(tmp_path, monkeypatch):
 
 def test_subfinder_osint_writes_state_under_osint_dir(tmp_path, monkeypatch):
     complete(tmp_path, monkeypatch)
-    for n in ['candidates.txt','raw_names.txt','state.json','subfinder.pid','subfinder.log','subfinder.err','subfinder.status.json','generated_candidates.txt']:
+    for n in ['candidates.txt','raw_names.txt','state.json','subfinder.pid','subfinder.log','subfinder.err','subfinder.status.json']:
         assert (tmp_path/'osint'/'subfinder-osint'/n).exists(); assert not (tmp_path/n).exists()
 
 
@@ -125,7 +125,7 @@ def test_subfinder_osint_failed_on_nonzero_exit(tmp_path, monkeypatch):
 def test_subfinder_osint_uses_dictionary_hashcat_execution_when_ready(tmp_path, monkeypatch):
     a, c = complete(tmp_path, monkeypatch)
     run = Mock(return_value=(4, '{"status":4,"progress":[1,1],"recovered_salts":[1,1]}', ''))
-    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.subfinder_osint.run_cmd', run)
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.subfinder_osint.run_cmd', run)
     a.run_slice(c); cmd = run.call_args.args[0]
     assert str(tmp_path/'osint'/'subfinder-osint'/'candidates.txt') == cmd[-1]
     assert '--potfile-path' in cmd and str(tmp_path/'run.pot') in cmd and '-m' in cmd and '8300' in cmd
@@ -163,12 +163,12 @@ def test_scheduler_prioritizes_subfinder_first_run_before_highest_score(tmp_path
 
 
 def test_subfinder_first_run_pending_cleared_after_valid_execution(tmp_path, monkeypatch):
-    a, c = complete(tmp_path, monkeypatch); monkeypatch.setattr('adaptive_hashcat_scheduler.arms.subfinder_osint.run_cmd', Mock(return_value=(4,'','')))
+    a, c = complete(tmp_path, monkeypatch); monkeypatch.setattr('nsec3_candidate_scheduler.arms.subfinder_osint.run_cmd', Mock(return_value=(4,'','')))
     a.run_slice(c); assert not a.first_run_pending
 
 
 def test_subfinder_first_run_pending_not_cleared_after_failed_no_progress(tmp_path, monkeypatch):
-    a, c = complete(tmp_path, monkeypatch); monkeypatch.setattr('adaptive_hashcat_scheduler.arms.subfinder_osint.run_cmd', Mock(return_value=(99,'','')))
+    a, c = complete(tmp_path, monkeypatch); monkeypatch.setattr('nsec3_candidate_scheduler.arms.subfinder_osint.run_cmd', Mock(return_value=(99,'','')))
     a.run_slice(c); assert a.first_run_pending
 
 

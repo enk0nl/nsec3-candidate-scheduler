@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from adaptive_hashcat_scheduler.arms.base import SliceResult
-from adaptive_hashcat_scheduler.feedback.queue import FeedbackQueueState
-from adaptive_hashcat_scheduler.hashcat.runner import EXIT_MEANINGS, build_hashcat_command, run_cmd
-from adaptive_hashcat_scheduler.hashcat.status import latest_summary
+from nsec3_candidate_scheduler.arms.base import SliceResult
+from nsec3_candidate_scheduler.feedback.queue import FeedbackQueueState
+from nsec3_candidate_scheduler.hashcat.runner import EXIT_MEANINGS, build_hashcat_command, run_cmd
+from nsec3_candidate_scheduler.hashcat.status import latest_summary
 
 
 def candidate_cursor_from_summary(summary: dict[str, Any], total_candidates: int, skip_before: int) -> tuple[int | None, str]:
