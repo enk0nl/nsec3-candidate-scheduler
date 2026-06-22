@@ -3,8 +3,9 @@ import json, os, re, subprocess
 from pathlib import Path
 from typing import Any
 from adaptive_hashcat_scheduler.arms.amass_osint import parse_domains, parse_amass_version, MIN_AMASS_VERSION
+from adaptive_hashcat_scheduler.arms.osint_common import normalize_osint_domain
 
-SUPPORTED={'dictionary','brute_force','feedback','predictive_prefix','predictive_suffix','permutation','static_affix_feedback','parent_domain_feedback','amass_osint'}
+SUPPORTED={'dictionary','brute_force','feedback','predictive_prefix','predictive_suffix','permutation','static_affix_feedback','parent_domain_feedback','amass_osint','subfinder_osint'}
 
 def _validate_permutation(arm: dict[str, Any]) -> None:
     numeric = {
@@ -91,6 +92,33 @@ def _validate_amass_osint(arm: dict[str, Any]) -> dict[str, Any]:
             pass
     return arm
 
+
+def _validate_subfinder_osint(arm: dict[str, Any]) -> dict[str, Any]:
+    arm = dict(arm)
+    raw_domain = arm.get('domain', '')
+    if not isinstance(raw_domain, str):
+        raise ValueError('subfinder_osint arm requires single domain string')
+    if ',' in raw_domain:
+        raise ValueError('subfinder_osint arm requires single domain, not comma-separated domains')
+    domain = normalize_osint_domain(raw_domain)
+    if not domain:
+        raise ValueError('subfinder_osint arm requires non-empty domain')
+    arm['domain'] = domain
+    defaults = {
+        'subfinder_binary': 'subfinder', 'start_on_run_start': True, 'poll_interval_seconds': 5,
+        'run_immediately_when_ready': True, 'max_candidates': None, 'dedupe': True,
+        'include_single_label': True, 'include_multi_label': True,
+        'keep_running_on_exit': False, 'min_slices_between_runs': 0,
+    }
+    for k, v in defaults.items(): arm.setdefault(k, v)
+    for k in ('start_on_run_start','run_immediately_when_ready','dedupe','include_single_label','include_multi_label','keep_running_on_exit'):
+        if not isinstance(arm[k], bool): raise ValueError(f'{k} must be boolean')
+    if not isinstance(arm['poll_interval_seconds'], (int, float)) or isinstance(arm['poll_interval_seconds'], bool) or arm['poll_interval_seconds'] <= 0:
+        raise ValueError('poll_interval_seconds must be positive')
+    if arm['max_candidates'] is not None and (not isinstance(arm['max_candidates'], int) or isinstance(arm['max_candidates'], bool) or arm['max_candidates'] < 0):
+        raise ValueError('max_candidates must be non-negative int or null')
+    return arm
+
 def load_config(path: str) -> dict[str, Any]:
     with open(path,'r',encoding='utf-8') as f: cfg=json.load(f)
     base=Path(path).parent
@@ -135,6 +163,8 @@ def load_config(path: str) -> dict[str, Any]:
             _validate_permutation(arm)
         if t=='amass_osint':
             arm=_validate_amass_osint(arm)
+        if t=='subfinder_osint':
+            arm=_validate_subfinder_osint(arm)
         if t=='parent_domain_feedback':
             arm=dict(arm)
             mpl=arm.get('min_parent_labels', 1)
@@ -166,7 +196,7 @@ def load_config(path: str) -> dict[str, Any]:
             if arm.get('base_mode','full') != 'full': raise ValueError('static_affix_feedback base_mode must be full')
         fe=arm.get('force_every_slices')
         if fe is not None and (not isinstance(fe,int) or isinstance(fe,bool) or fe<=0): raise ValueError('force_every_slices must be positive int')
-        if t in {'feedback','predictive_prefix','predictive_suffix','permutation','static_affix_feedback','parent_domain_feedback','amass_osint'}:
+        if t in {'feedback','predictive_prefix','predictive_suffix','permutation','static_affix_feedback','parent_domain_feedback','amass_osint','subfinder_osint'}:
             msbr=arm.get('min_slices_between_runs')
             if msbr is not None and (not isinstance(msbr,int) or isinstance(msbr,bool) or msbr<0): raise ValueError('min_slices_between_runs must be non-negative int')
             mqs=arm.get('min_queue_size')

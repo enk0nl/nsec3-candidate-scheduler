@@ -81,3 +81,62 @@ Candidate conversion strips the matching configured base-domain suffix from each
 The Amass OSINT arm is delayed and not warm-up eligible. While Amass is running, it is unavailable and consumes no scheduler slices. If Amass is still running when the slice budget ends, it may never be used in that scheduler run. When candidates are ready, the arm uses `<out_dir>/osint/<arm>/candidates.txt` as a normal hashcat dictionary wordlist with the shared potfile and normal dictionary progress accounting.
 
 By default, `run_immediately_when_ready: true` sets `first_run_pending` as soon as candidates are written. During the adaptive phase, this makes the arm run at the next possible scheduler slice before forced cadence, epsilon exploration, or highest-score selection. After that first valid execution, normal scoring and cooldown rules apply. Set `run_immediately_when_ready: false` to disable this priority and let normal selection rules choose the arm.
+
+## Subfinder OSINT arm (`subfinder_osint`)
+
+`subfinder_osint` is a delayed external-source OSINT arm. It is not a feedback arm and is not warm-up eligible. When a scheduler run starts, the arm can start one Subfinder process in the background and allow the scheduler to continue running other arms while Subfinder is still collecting names.
+
+Subfinder is **not bundled** with this scheduler. Install Subfinder separately and configure any providers or API keys in Subfinder itself; the scheduler does not manage Subfinder provider configuration. The scheduler starts Subfinder with only:
+
+```sh
+subfinder -silent -d <domain>
+```
+
+For example:
+
+```json
+{
+  "name": "subfinder-osint",
+  "type": "subfinder_osint",
+  "enabled": false,
+  "subfinder_binary": "/home/vboxuser/go/bin/subfinder",
+  "domain": "example.nl",
+  "start_on_run_start": true,
+  "poll_interval_seconds": 5,
+  "run_immediately_when_ready": true,
+  "include_single_label": true,
+  "include_multi_label": true,
+  "max_candidates": null,
+  "dedupe": true,
+  "min_slices_between_runs": 0,
+  "keep_running_on_exit": false
+}
+```
+
+`domain` is required and must be a single non-empty base domain. Multi-domain Subfinder arms are not currently supported; define separate arms if needed.
+
+Subfinder output is captured under the run OSINT state directory, for example:
+
+```text
+<out_dir>/osint/subfinder-osint/subfinder.log
+<out_dir>/osint/subfinder-osint/subfinder.err
+<out_dir>/osint/subfinder-osint/subfinder.pid
+<out_dir>/osint/subfinder-osint/subfinder.status.json
+<out_dir>/osint/subfinder-osint/raw_names.txt
+<out_dir>/osint/subfinder-osint/candidates.txt
+<out_dir>/osint/subfinder-osint/generated_candidates.txt
+<out_dir>/osint/subfinder-osint/state.json
+```
+
+When Subfinder exits successfully, the scheduler reads the full names from `subfinder.log`, writes them to `raw_names.txt`, strips the configured base-domain suffix, and writes relative candidate labels to `candidates.txt`. For `domain: "example.nl"`, `sub.example.nl` becomes `sub`, `sub.sub.example.nl` becomes `sub.sub`, and the base domain itself (`example.nl`) is rejected because it would produce an empty candidate. Names outside the configured domain are rejected. The resulting relative candidates are normalized and validated with the same DNS candidate rules used by the OSINT helper path before hashcat sees them.
+
+Candidate generation options:
+
+* `include_single_label` controls candidates such as `sub`.
+* `include_multi_label` controls candidates such as `sub.sub`.
+* `dedupe` preserves first occurrence while removing duplicates.
+* `max_candidates` optionally caps accepted candidates.
+
+While Subfinder is running, the arm is unavailable and consumes no scheduler slice. Once candidates are ready, the arm behaves like a dictionary/wordlist arm over `<out_dir>/osint/<arm>/candidates.txt`, using the run hash mode, shared potfile, optimized-kernel setting, skip/progress accounting, runtime-limited slices, and normal shared marginal scoring.
+
+By default, `run_immediately_when_ready: true` makes the arm run once at the next possible adaptive slice after it becomes ready. This immediate first run is prioritized before forced cadence, epsilon exploration, and highest-score selection. Set `run_immediately_when_ready: false` to disable that first-run priority and let normal selection rules apply. If Subfinder is still running when the configured slice budget ends, the generated wordlist may never be used in that scheduler run. On scheduler exit, a still-running Subfinder process is terminated unless `keep_running_on_exit: true` is set.

@@ -16,6 +16,7 @@ from adaptive_hashcat_scheduler.arms.permutation import PermutationArm
 from adaptive_hashcat_scheduler.arms.static_affix_feedback import StaticAffixFeedbackArm
 from adaptive_hashcat_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
 from adaptive_hashcat_scheduler.arms.amass_osint import AmassOsintArm
+from adaptive_hashcat_scheduler.arms.subfinder_osint import SubfinderOsintArm
 
 @dataclass
 class SchedulerContext:
@@ -59,6 +60,7 @@ def make_arm(cfg):
     if t=='static_affix_feedback': return StaticAffixFeedbackArm(name,t,cfg)
     if t=='parent_domain_feedback': return ParentDomainFeedbackArm(name,t,cfg)
     if t=='amass_osint': return AmassOsintArm(name,t,cfg)
+    if t=='subfinder_osint': return SubfinderOsintArm(name,t,cfg)
     raise ValueError(f'unknown arm type: {t}')
 
 def _feedback_pending_virtual_streams(arm, context) -> int:
@@ -104,7 +106,16 @@ def _availability(arm, context, current_adaptive_slice, force_queue: bool = Fals
     if arm.type in FEEDBACK_TYPES:
         return _feedback_availability(arm, context, current_adaptive_slice, force_queue)
     available = arm.is_available(context)
-    return {'available': available, 'availability_reason': None if available else 'unavailable'}
+    reason = None if available else 'unavailable'
+    state = getattr(arm, 'state', None)
+    if getattr(arm, 'type', None) in {'amass_osint', 'subfinder_osint'} and not available:
+        if state in {'not_started', 'running', 'collecting_results'}:
+            reason = 'osint_running'
+        elif state == 'exhausted':
+            reason = 'osint_no_candidates'
+        elif state == 'failed':
+            reason = 'osint_failed'
+    return {'available': available, 'availability_reason': reason, 'runnable': available, 'osint_state': state}
 
 def choose_arm(arms, schedule, warmup, epsilon, rng, current_adaptive_slice):
     context = choose_arm.context
