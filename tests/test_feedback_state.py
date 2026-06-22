@@ -41,11 +41,12 @@ def test_generated_candidates_sqlite_is_default(tmp_path):
 def test_sqlite_backend_dedupes_without_text_file(tmp_path, read_lines):
     state = FeedbackQueueState(tmp_path, 'permutation')
     first = state.enqueue_generated_candidates(['spf0'])
+    state.write_queue([])
     second = state.enqueue_generated_candidates(['spf0'])
     assert first['candidates_enqueued'] == 1
     assert second['candidates_enqueued'] == 0
     assert second['candidates_skipped_generated_duplicate'] == 1
-    assert read_lines(state.queue_path) == ['spf0']
+    assert read_lines(state.queue_path) == []
     assert state.generated_sqlite_path.exists()
     assert read_lines(state.generated_path) == []
     assert state.generated_candidates_count() == 1
@@ -67,8 +68,10 @@ def test_text_backend_preserves_legacy_behavior(tmp_path, read_lines):
 def test_none_backend_allows_historical_regeneration(tmp_path, read_lines):
     state = FeedbackQueueState(tmp_path, 'permutation', {'generated_candidates_backend': 'none'})
     assert state.enqueue_generated_candidates(['spf0'])['candidates_enqueued'] == 1
+    state.write_queue([])
+    state.clear_active_slice()
     assert state.enqueue_generated_candidates(['spf0'])['candidates_enqueued'] == 1
-    assert read_lines(state.queue_path) == ['spf0', 'spf0']
+    assert read_lines(state.queue_path) == ['spf0']
 
 
 def test_expanded_bases_written_separately_from_generated_candidates(tmp_path, read_lines):
@@ -110,6 +113,34 @@ def test_generated_candidates_count_does_not_load_text_ledger(tmp_path, monkeypa
     monkeypatch.setattr(state, 'load_generated_candidates', boom)
     assert state.generated_candidates_count() == 1
 
+
+
+def test_backend_none_still_dedupes_against_queue(tmp_path, read_lines):
+    state = FeedbackQueueState(tmp_path, 'none-queue', {'generated_candidates_backend': 'none'})
+    state.write_queue(['vpn'])
+    stats = state.enqueue_generated_candidates(['vpn'])
+    assert stats['candidates_enqueued'] == 0
+    assert stats['candidates_skipped_queue_duplicate'] == 1
+    assert stats['candidates_skipped_generated_duplicate'] == 0
+    assert read_lines(state.queue_path) == ['vpn']
+
+
+def test_backend_none_still_dedupes_against_active_slice(tmp_path, read_lines):
+    state = FeedbackQueueState(tmp_path, 'none-active', {'generated_candidates_backend': 'none'})
+    state._write_lines(state.slice_path, ['dev'])
+    state.save_active_slice({'active': True, 'slice_file': state.slice_path.name, 'total_candidates': 1, 'skip': 0})
+    stats = state.enqueue_generated_candidates(['dev'])
+    assert stats['candidates_enqueued'] == 0
+    assert stats['candidates_skipped_active_slice_duplicate'] == 1
+    assert read_lines(state.queue_path) == []
+
+
+def test_backend_none_reports_queue_duplicates_separately_from_generated_duplicates(tmp_path):
+    state = FeedbackQueueState(tmp_path, 'none-separate', {'generated_candidates_backend': 'none'})
+    state.write_queue(['vpn'])
+    stats = state.enqueue_generated_candidates(['vpn'])
+    assert stats['candidates_skipped_queue_duplicate'] == 1
+    assert stats['candidates_skipped_generated_duplicate'] == 0
 
 def test_backend_none_creates_no_generated_candidate_ledger(tmp_path):
     state = FeedbackQueueState(tmp_path, 'none-arm', {'generated_candidates_backend': 'none'})

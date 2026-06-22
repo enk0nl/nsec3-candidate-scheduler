@@ -72,7 +72,8 @@ class StaticAffixFeedbackArm(Arm):
 
     def on_new_discoveries(self, discoveries, context) -> dict[str, Any]:
         q = self._queue(context)
-        queued = set(q.load_queue())
+        queued = q.load_queue_candidates_set()
+        active = q.load_active_slice_candidates_set()
         expanded = q.load_expanded_bases()
         expansion_seen: set[str] = set()
         cracked = {value for _, value in iter_potfile_cracks(context.potfile)}
@@ -80,6 +81,9 @@ class StaticAffixFeedbackArm(Arm):
         bases: list[str] = []
         metrics = self._empty_metrics()
         metrics['candidates_skipped_batch_duplicate'] = 0
+        metrics['candidates_skipped_queue_duplicate'] = 0
+        metrics['candidates_skipped_active_slice_duplicate'] = 0
+        metrics['candidates_skipped_already_cracked'] = 0
         gen_prefix = bool(self.config.get('generate_prefixes', True))
         gen_suffix = bool(self.config.get('generate_suffixes', True))
         for raw in discoveries:
@@ -107,10 +111,13 @@ class StaticAffixFeedbackArm(Arm):
                     metrics['rejected_candidates'] += 1
                     continue
                 if cand in cracked:
-                    metrics['affix_duplicates_already_cracked'] += 1; metrics['duplicates_skipped'] += 1
+                    metrics['affix_duplicates_already_cracked'] += 1; metrics['duplicates_skipped'] += 1; metrics['candidates_skipped_already_cracked'] += 1
                     continue
                 if cand in queued:
-                    metrics['affix_duplicates_queued'] += 1; metrics['duplicates_skipped'] += 1
+                    metrics['affix_duplicates_queued'] += 1; metrics['duplicates_skipped'] += 1; metrics['candidates_skipped_queue_duplicate'] += 1
+                    continue
+                if cand in active:
+                    metrics['duplicates_skipped'] += 1; metrics['candidates_skipped_active_slice_duplicate'] += 1
                     continue
                 if cand in expansion_seen:
                     metrics['duplicates_skipped'] += 1; metrics['candidates_skipped_batch_duplicate'] += 1
@@ -128,6 +135,9 @@ class StaticAffixFeedbackArm(Arm):
         metrics['persistent_generated_dedupe'] = enq_stats['persistent_generated_dedupe']
         metrics['candidates_skipped_generated_duplicate'] = enq_stats['candidates_skipped_generated_duplicate']
         metrics['candidates_skipped_batch_duplicate'] += enq_stats['candidates_skipped_batch_duplicate']
+        metrics['candidates_skipped_queue_duplicate'] += enq_stats['candidates_skipped_queue_duplicate']
+        metrics['candidates_skipped_active_slice_duplicate'] += enq_stats['candidates_skipped_active_slice_duplicate']
+        metrics['candidates_skipped_already_cracked'] += enq_stats['candidates_skipped_already_cracked']
         metrics['candidates_enqueued_total'] = enq_stats['candidates_enqueued_total']
         q.mark_bases_expanded(bases)
         self.last_expansion = metrics

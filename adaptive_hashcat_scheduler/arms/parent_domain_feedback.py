@@ -74,7 +74,8 @@ class ParentDomainFeedbackArm(Arm):
 
     def on_new_discoveries(self, discoveries, context) -> dict[str, Any]:
         q = self._queue(context)
-        queued = set(q.load_queue())
+        queued = q.load_queue_candidates_set()
+        active = q.load_active_slice_candidates_set()
         expanded = q.load_expanded_bases()
         expansion_seen: set[str] = set()
         cracked = {normalize_dns_name(value) for _, value in iter_potfile_cracks(context.potfile)}
@@ -83,6 +84,9 @@ class ParentDomainFeedbackArm(Arm):
         bases: list[str] = []
         metrics: dict[str, Any] = self._empty_metrics()
         metrics['candidates_skipped_batch_duplicate'] = 0
+        metrics['candidates_skipped_queue_duplicate'] = 0
+        metrics['candidates_skipped_active_slice_duplicate'] = 0
+        metrics['candidates_skipped_already_cracked'] = 0
         debug_enabled = bool(self.config.get('debug_expansions', False))
         debug_sample_size = max(0, int(self.config.get('debug_sample_size', 20)))
         parent_samples: list[str] = []
@@ -120,11 +124,18 @@ class ParentDomainFeedbackArm(Arm):
                 if cand in cracked:
                     metrics['parent_duplicates_already_cracked'] += 1
                     metrics['parent_duplicates_skipped'] += 1
+                    metrics['candidates_skipped_already_cracked'] += 1
                     record['skipped_already_cracked'].append(cand)
                     continue
                 if cand in queued:
                     metrics['parent_duplicates_queued'] += 1
                     metrics['parent_duplicates_skipped'] += 1
+                    metrics['candidates_skipped_queue_duplicate'] += 1
+                    record['skipped_queued'].append(cand)
+                    continue
+                if cand in active:
+                    metrics['parent_duplicates_skipped'] += 1
+                    metrics['candidates_skipped_active_slice_duplicate'] += 1
                     record['skipped_queued'].append(cand)
                     continue
                 if cand in expansion_seen:
@@ -150,6 +161,9 @@ class ParentDomainFeedbackArm(Arm):
         metrics['persistent_generated_dedupe'] = enq_stats['persistent_generated_dedupe']
         metrics['candidates_skipped_generated_duplicate'] = enq_stats['candidates_skipped_generated_duplicate']
         metrics['candidates_skipped_batch_duplicate'] += enq_stats['candidates_skipped_batch_duplicate']
+        metrics['candidates_skipped_queue_duplicate'] += enq_stats['candidates_skipped_queue_duplicate']
+        metrics['candidates_skipped_active_slice_duplicate'] += enq_stats['candidates_skipped_active_slice_duplicate']
+        metrics['candidates_skipped_already_cracked'] += enq_stats['candidates_skipped_already_cracked']
         metrics['candidates_enqueued_total'] = enq_stats['candidates_enqueued_total']
         if debug_sample_size > 0:
             metrics['parent_generated_samples'] = parent_samples

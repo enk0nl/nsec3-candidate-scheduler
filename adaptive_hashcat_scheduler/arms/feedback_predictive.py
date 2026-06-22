@@ -38,12 +38,16 @@ class PredictiveFeedbackArm(Arm):
 
     def on_new_discoveries(self, discoveries, context) -> dict[str, Any]:
         q = self._queue(context)
-        queued = set(q.load_queue())
+        queued = q.load_queue_candidates_set()
+        active = q.load_active_slice_candidates_set()
         expanded = q.load_expanded_bases()
         expansion_seen: set[str] = set()
         to_enqueue, bases = [], []
         metrics = self._empty_metrics()
         metrics['candidates_skipped_batch_duplicate'] = 0
+        metrics['candidates_skipped_queue_duplicate'] = 0
+        metrics['candidates_skipped_active_slice_duplicate'] = 0
+        metrics['candidates_skipped_already_cracked'] = 0
         for raw in discoveries:
             name = normalize_dns_name(raw)
             if name is None:
@@ -64,7 +68,9 @@ class PredictiveFeedbackArm(Arm):
                 if cand is None:
                     metrics['rejected_candidates'] += 1; continue
                 if cand in queued:
-                    metrics['duplicates_skipped'] += 1; continue
+                    metrics['duplicates_skipped'] += 1; metrics['candidates_skipped_queue_duplicate'] += 1; continue
+                if cand in active:
+                    metrics['duplicates_skipped'] += 1; metrics['candidates_skipped_active_slice_duplicate'] += 1; continue
                 if cand in expansion_seen:
                     metrics['duplicates_skipped'] += 1; metrics['candidates_skipped_batch_duplicate'] += 1; continue
                 expansion_seen.add(cand); queued.add(cand); to_enqueue.append(cand)
@@ -76,6 +82,9 @@ class PredictiveFeedbackArm(Arm):
         metrics['persistent_generated_dedupe'] = enq_stats['persistent_generated_dedupe']
         metrics['candidates_skipped_generated_duplicate'] = enq_stats['candidates_skipped_generated_duplicate']
         metrics['candidates_skipped_batch_duplicate'] += enq_stats['candidates_skipped_batch_duplicate']
+        metrics['candidates_skipped_queue_duplicate'] += enq_stats['candidates_skipped_queue_duplicate']
+        metrics['candidates_skipped_active_slice_duplicate'] += enq_stats['candidates_skipped_active_slice_duplicate']
+        metrics['candidates_skipped_already_cracked'] += enq_stats['candidates_skipped_already_cracked']
         metrics['candidates_enqueued_total'] = enq_stats['candidates_enqueued_total']
         q.mark_bases_expanded(bases)
         self.last_expansion = metrics

@@ -283,10 +283,14 @@ class PermutationArm(Arm):
 
     def on_new_discoveries(self, discoveries, context) -> dict[str, Any]:
         q = self._queue(context)
-        queued = set(q.load_queue())
+        queued = q.load_queue_candidates_set()
+        active = q.load_active_slice_candidates_set()
         expanded = q.load_expanded_bases()
         metrics = self._empty_metrics()
         metrics['candidates_skipped_batch_duplicate'] = 0
+        metrics['candidates_skipped_queue_duplicate'] = 0
+        metrics['candidates_skipped_active_slice_duplicate'] = 0
+        metrics['candidates_skipped_already_cracked'] = 0
         numeric_to_enqueue: list[str] = []
         alpha_to_enqueue: list[str] = []
         expansion_seen: set[str] = set()
@@ -311,6 +315,12 @@ class PermutationArm(Arm):
                     if cand in queued:
                         metrics['numeric_duplicates_skipped'] += 1
                         metrics['permutation_duplicates_skipped'] += 1
+                        metrics['candidates_skipped_queue_duplicate'] += 1
+                        continue
+                    if cand in active:
+                        metrics['numeric_duplicates_skipped'] += 1
+                        metrics['permutation_duplicates_skipped'] += 1
+                        metrics['candidates_skipped_active_slice_duplicate'] += 1
                         continue
                     if cand in expansion_seen:
                         metrics['numeric_duplicates_skipped'] += 1
@@ -323,6 +333,12 @@ class PermutationArm(Arm):
                     if cand in queued:
                         metrics['alpha_duplicates_skipped'] += 1
                         metrics['permutation_duplicates_skipped'] += 1
+                        metrics['candidates_skipped_queue_duplicate'] += 1
+                        continue
+                    if cand in active:
+                        metrics['alpha_duplicates_skipped'] += 1
+                        metrics['permutation_duplicates_skipped'] += 1
+                        metrics['candidates_skipped_active_slice_duplicate'] += 1
                         continue
                     if cand in expansion_seen:
                         metrics['alpha_duplicates_skipped'] += 1
@@ -346,6 +362,8 @@ class PermutationArm(Arm):
         metrics['persistent_generated_dedupe'] = numeric_stats['persistent_generated_dedupe']
         metrics['candidates_skipped_generated_duplicate'] = numeric_dup + alpha_dup
         metrics['candidates_skipped_batch_duplicate'] += batch_dup
+        metrics['candidates_skipped_queue_duplicate'] += numeric_stats['candidates_skipped_queue_duplicate'] + alpha_stats['candidates_skipped_queue_duplicate']
+        metrics['candidates_skipped_active_slice_duplicate'] += numeric_stats['candidates_skipped_active_slice_duplicate'] + alpha_stats['candidates_skipped_active_slice_duplicate']
         metrics['candidates_enqueued'] = metrics['numeric_candidates_enqueued'] + metrics['alpha_candidates_enqueued']
         metrics['candidates_enqueued_total'] = metrics['candidates_enqueued']
         q.mark_bases_expanded(expanded_keys)

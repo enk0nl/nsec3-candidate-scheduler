@@ -17,7 +17,7 @@ class CommonFeedbackArm(Arm):
     def run_slice(self, context):
         return run_feedback_dictionary_slice(self, context, self.last_expansion)
     def on_new_discoveries(self, discoveries, context):
-        q=self._queue(context); queued=set(q.load_queue()); expanded=q.load_expanded_bases(); expansion_seen=set(); cands=[]; bases=[]; gen=dup=rej=0
+        q=self._queue(context); queued=q.load_queue_candidates_set(); active=q.load_active_slice_candidates_set(); expanded=q.load_expanded_bases(); expansion_seen=set(); cands=[]; bases=[]; gen=dup=rej=0
         for raw in discoveries:
             base=normalize_dns_name(raw)
             if base is None or base in expanded: rej+=1; continue
@@ -26,9 +26,9 @@ class CommonFeedbackArm(Arm):
                 if not lab: continue
                 for cand in (f'{base}.{lab}', f'{lab}.{base}'):
                     gen+=1; cand=normalize_dns_name(cand)
-                    if cand in queued or cand in expansion_seen: dup+=1; continue
+                    if cand in queued or cand in active or cand in expansion_seen: dup+=1; continue
                     expansion_seen.add(cand); queued.add(cand); cands.append(cand)
             expanded.add(base); bases.append(base)
         enq_stats=q.enqueue_generated_candidates(cands); enq=enq_stats['candidates_enqueued']; dup+=enq_stats['candidates_skipped_generated_duplicate']; q.mark_bases_expanded(bases)
-        self.last_expansion={'bases_expanded':len(bases),'predictions_generated':gen,'candidates_enqueued':enq,'duplicates_skipped':dup,'rejected_candidates':rej,'generated_candidates_backend':enq_stats['generated_candidates_backend'],'persistent_generated_dedupe':enq_stats['persistent_generated_dedupe'],'candidates_skipped_generated_duplicate':enq_stats['candidates_skipped_generated_duplicate'],'candidates_skipped_batch_duplicate':enq_stats['candidates_skipped_batch_duplicate'],'candidates_enqueued_total':enq_stats['candidates_enqueued_total']}
+        self.last_expansion={'bases_expanded':len(bases),'predictions_generated':gen,'candidates_enqueued':enq,'duplicates_skipped':dup,'rejected_candidates':rej,'generated_candidates_backend':enq_stats['generated_candidates_backend'],'persistent_generated_dedupe':enq_stats['persistent_generated_dedupe'],'candidates_skipped_generated_duplicate':enq_stats['candidates_skipped_generated_duplicate'],'candidates_skipped_batch_duplicate':enq_stats['candidates_skipped_batch_duplicate'],'candidates_skipped_queue_duplicate':enq_stats['candidates_skipped_queue_duplicate'],'candidates_skipped_active_slice_duplicate':enq_stats['candidates_skipped_active_slice_duplicate'],'candidates_enqueued_total':enq_stats['candidates_enqueued_total']}
         return self.last_expansion

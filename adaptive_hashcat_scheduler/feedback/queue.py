@@ -200,6 +200,8 @@ class FeedbackQueueState:
             'candidates_new': 0,
             'candidates_skipped_generated_duplicate': 0,
             'candidates_skipped_batch_duplicate': 0,
+            'candidates_skipped_queue_duplicate': 0,
+            'candidates_skipped_active_slice_duplicate': 0,
             'candidates_skipped_already_cracked': 0,
         }
 
@@ -240,8 +242,46 @@ class FeedbackQueueState:
         stats['candidates_new'] = len(new)
         return new, stats
 
+    def load_queue_candidates_set(self) -> set[str]:
+        # TODO: Queue dedupe currently loads queue.txt for membership checks; very large queues may need a SQLite-backed queue or compact membership index later.
+        return set(self.load_queue())
+
+    def load_active_slice_candidates_set(self) -> set[str]:
+        if not self.active_slice_is_active():
+            return set()
+        return self._load_set(self.slice_path)
+
     def enqueue_generated_candidates(self, candidates: Iterable[str], *, already_cracked: Iterable[str] | None = None) -> dict[str, Any]:
-        new, stats = self.mark_generated_candidates(candidates, already_cracked=already_cracked)
+        values = [str(c) for c in candidates if str(c)]
+        stats = self._generated_dedupe_stats(len(values))
+        cracked = {str(c) for c in already_cracked or [] if str(c)}
+        queued = self.load_queue_candidates_set()
+        active = self.load_active_slice_candidates_set()
+        seen_batch: set[str] = set()
+        operational_new: list[str] = []
+        for value in values:
+            if value in seen_batch:
+                stats['candidates_skipped_batch_duplicate'] += 1
+                continue
+            seen_batch.add(value)
+            if value in cracked:
+                stats['candidates_skipped_already_cracked'] += 1
+                continue
+            if value in queued:
+                stats['candidates_skipped_queue_duplicate'] += 1
+                continue
+            if value in active:
+                stats['candidates_skipped_active_slice_duplicate'] += 1
+                continue
+            operational_new.append(value)
+            queued.add(value)
+
+        new, persistent_stats = self.mark_generated_candidates(operational_new)
+        stats['candidates_new'] = persistent_stats['candidates_new']
+        stats['candidates_skipped_generated_duplicate'] = persistent_stats['candidates_skipped_generated_duplicate']
+        # mark_generated_candidates should not see these after operational filtering, but merge defensively.
+        stats['candidates_skipped_batch_duplicate'] += persistent_stats['candidates_skipped_batch_duplicate']
+        stats['candidates_skipped_already_cracked'] += persistent_stats['candidates_skipped_already_cracked']
         enqueued = self._append_lines(self.queue_path, new)
         if self.generated_candidates_backend == 'sqlite' and self.retain_generated_candidates_text:
             self._append_lines(self.generated_path, new)
