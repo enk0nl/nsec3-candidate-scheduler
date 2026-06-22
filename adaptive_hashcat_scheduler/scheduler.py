@@ -4,6 +4,7 @@ import datetime as dt, json, os, random, re, shutil, time
 from typing import Any
 
 FEEDBACK_TYPES = {'feedback', 'predictive_prefix', 'predictive_suffix', 'permutation', 'static_affix_feedback', 'parent_domain_feedback'}
+OSINT_TYPES = {'amass_osint', 'subfinder_osint'}
 
 from adaptive_hashcat_scheduler.config import load_config
 from adaptive_hashcat_scheduler.hashcat.potfile import iter_potfile_cracks
@@ -16,6 +17,7 @@ from adaptive_hashcat_scheduler.arms.permutation import PermutationArm
 from adaptive_hashcat_scheduler.arms.static_affix_feedback import StaticAffixFeedbackArm
 from adaptive_hashcat_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
 from adaptive_hashcat_scheduler.arms.amass_osint import AmassOsintArm
+from adaptive_hashcat_scheduler.arms.subfinder_osint import SubfinderOsintArm
 
 @dataclass
 class SchedulerContext:
@@ -59,6 +61,7 @@ def make_arm(cfg):
     if t=='static_affix_feedback': return StaticAffixFeedbackArm(name,t,cfg)
     if t=='parent_domain_feedback': return ParentDomainFeedbackArm(name,t,cfg)
     if t=='amass_osint': return AmassOsintArm(name,t,cfg)
+    if t=='subfinder_osint': return SubfinderOsintArm(name,t,cfg)
     raise ValueError(f'unknown arm type: {t}')
 
 def _feedback_pending_virtual_streams(arm, context) -> int:
@@ -104,6 +107,16 @@ def _availability(arm, context, current_adaptive_slice, force_queue: bool = Fals
     if arm.type in FEEDBACK_TYPES:
         return _feedback_availability(arm, context, current_adaptive_slice, force_queue)
     available = arm.is_available(context)
+    if arm.type in OSINT_TYPES and not available:
+        state = getattr(arm, 'state', None)
+        reason = {
+            'not_started': 'osint_not_started',
+            'running': 'osint_running',
+            'collecting_results': 'osint_collecting_results',
+            'exhausted': 'osint_no_candidates',
+            'failed': 'osint_failed',
+        }.get(state, 'unavailable')
+        return {'available': False, 'availability_reason': reason, 'runnable': False, 'osint_state': state}
     return {'available': available, 'availability_reason': None if available else 'unavailable'}
 
 def choose_arm(arms, schedule, warmup, epsilon, rng, current_adaptive_slice):
