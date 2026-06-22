@@ -61,7 +61,7 @@ class PermutationArm(Arm):
 
     def _queue(self, context) -> FeedbackQueueState:
         if self.queue_state is None or str(self.queue_state.out_dir) != context.out_dir:
-            self.queue_state = FeedbackQueueState(context.out_dir, self.name)
+            self.queue_state = FeedbackQueueState(context.out_dir, self.name, self.config)
             self._cursor_path(context).touch(exist_ok=True)
             if self._cursor_path(context).stat().st_size == 0:
                 self._write_cursor(context, {'pending_numeric_streams': 0, 'pending_alpha_streams': 0})
@@ -283,7 +283,6 @@ class PermutationArm(Arm):
 
     def on_new_discoveries(self, discoveries, context) -> dict[str, Any]:
         q = self._queue(context)
-        generated = q.load_generated_candidates()
         queued = set(q.load_queue())
         expanded = q.load_expanded_bases()
         metrics = self._empty_metrics()
@@ -308,22 +307,31 @@ class PermutationArm(Arm):
                 metrics['permutation_patterns_matched'] += 1
                 for cand in self._numeric_candidates(name, match):
                     metrics['numeric_candidates_generated'] += 1
-                    if cand in generated or cand in queued or cand in expansion_seen:
+                    if cand in queued or cand in expansion_seen:
                         metrics['numeric_duplicates_skipped'] += 1
                         metrics['permutation_duplicates_skipped'] += 1
                         continue
-                    expansion_seen.add(cand); generated.add(cand); queued.add(cand); numeric_to_enqueue.append(cand)
+                    expansion_seen.add(cand); queued.add(cand); numeric_to_enqueue.append(cand)
                 for cand in self._alpha_candidates(name, match):
                     metrics['alpha_candidates_generated'] += 1
-                    if cand in generated or cand in queued or cand in expansion_seen:
+                    if cand in queued or cand in expansion_seen:
                         metrics['alpha_duplicates_skipped'] += 1
                         metrics['permutation_duplicates_skipped'] += 1
                         continue
-                    expansion_seen.add(cand); generated.add(cand); queued.add(cand); alpha_to_enqueue.append(cand)
+                    expansion_seen.add(cand); queued.add(cand); alpha_to_enqueue.append(cand)
                 expanded.add(key); expanded_keys.append(key)
 
-        metrics['numeric_candidates_enqueued'] = q.append_candidates(numeric_to_enqueue)
-        metrics['alpha_candidates_enqueued'] = q.append_candidates(alpha_to_enqueue)
+        numeric_stats = q.enqueue_generated_candidates(numeric_to_enqueue)
+        alpha_stats = q.enqueue_generated_candidates(alpha_to_enqueue)
+        metrics['numeric_candidates_enqueued'] = numeric_stats['candidates_enqueued']
+        metrics['alpha_candidates_enqueued'] = alpha_stats['candidates_enqueued']
+        numeric_dup = numeric_stats['candidates_skipped_generated_duplicate']
+        alpha_dup = alpha_stats['candidates_skipped_generated_duplicate']
+        metrics['numeric_duplicates_skipped'] += numeric_dup
+        metrics['alpha_duplicates_skipped'] += alpha_dup
+        metrics['permutation_duplicates_skipped'] += numeric_dup + alpha_dup
+        metrics['generated_candidates_backend'] = numeric_stats['generated_candidates_backend']
+        metrics['candidates_skipped_generated_duplicate'] = numeric_dup + alpha_dup
         metrics['candidates_enqueued'] = metrics['numeric_candidates_enqueued'] + metrics['alpha_candidates_enqueued']
         q.mark_bases_expanded(expanded_keys)
         self._write_cursor(context, {'pending_numeric_streams': 0, 'pending_alpha_streams': 0})

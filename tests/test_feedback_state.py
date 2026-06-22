@@ -32,12 +32,43 @@ def test_feedback_state_does_not_migrate_legacy_root_files(tmp_path, write_lines
     assert state.load_expanded_bases() == set()
 
 
-def test_generated_candidates_is_dedupe_ledger(tmp_path, read_lines):
+def test_generated_candidates_sqlite_is_default(tmp_path):
     state = FeedbackQueueState(tmp_path, 'permutation')
-    assert state.append_candidates(['spf0', 'spf1']) == 2
-    assert read_lines(state.queue_path) == ['spf0', 'spf1']
-    assert read_lines(state.generated_path) == ['spf0', 'spf1']
+    assert state.generated_candidates_backend == 'sqlite'
+    assert state.retain_generated_candidates_text is False
+
+
+def test_sqlite_backend_dedupes_without_text_file(tmp_path, read_lines):
+    state = FeedbackQueueState(tmp_path, 'permutation')
+    first = state.enqueue_generated_candidates(['spf0'])
+    second = state.enqueue_generated_candidates(['spf0'])
+    assert first['candidates_enqueued'] == 1
+    assert second['candidates_enqueued'] == 0
+    assert second['candidates_skipped_generated_duplicate'] == 1
+    assert read_lines(state.queue_path) == ['spf0']
+    assert state.generated_sqlite_path.exists()
+    assert read_lines(state.generated_path) == []
+    assert state.generated_candidates_count() == 1
     assert not (state.root / 'seen_candidates.txt').exists()
+
+
+def test_retain_generated_candidates_text_writes_audit_file(tmp_path, read_lines):
+    state = FeedbackQueueState(tmp_path, 'permutation', {'retain_generated_candidates_text': True})
+    assert state.enqueue_generated_candidates(['spf0', 'spf0'])['candidates_enqueued'] == 1
+    assert read_lines(state.generated_path) == ['spf0']
+
+
+def test_text_backend_preserves_legacy_behavior(tmp_path, read_lines):
+    state = FeedbackQueueState(tmp_path, 'permutation', {'generated_candidates_backend': 'text'})
+    assert state.enqueue_generated_candidates(['spf0', 'spf0'])['candidates_enqueued'] == 1
+    assert read_lines(state.generated_path) == ['spf0']
+
+
+def test_none_backend_allows_historical_regeneration(tmp_path, read_lines):
+    state = FeedbackQueueState(tmp_path, 'permutation', {'generated_candidates_backend': 'none'})
+    assert state.enqueue_generated_candidates(['spf0'])['candidates_enqueued'] == 1
+    assert state.enqueue_generated_candidates(['spf0'])['candidates_enqueued'] == 1
+    assert read_lines(state.queue_path) == ['spf0', 'spf0']
 
 
 def test_expanded_bases_written_separately_from_generated_candidates(tmp_path, read_lines):
@@ -45,3 +76,36 @@ def test_expanded_bases_written_separately_from_generated_candidates(tmp_path, r
     state.append_expanded_bases(['dev.api.test'])
     assert read_lines(state.expanded_path) == ['dev.api.test']
     assert read_lines(state.generated_path) == []
+
+
+def test_legacy_generated_candidates_txt_imported_once(tmp_path, write_lines):
+    root = tmp_path / 'feedback' / 'permutation'
+    root.mkdir(parents=True)
+    write_lines(root / 'generated_candidates.txt', ['spf0', 'spf1', 'spf1'])
+    state = FeedbackQueueState(tmp_path, 'permutation')
+    assert state.generated_candidates_count() == 2
+    stats = state.enqueue_generated_candidates(['spf0', 'spf2'])
+    assert stats['candidates_enqueued'] == 1
+    with state._connect_generated_sqlite() as conn:
+        marker = conn.execute("SELECT value FROM metadata WHERE key='imported_generated_candidates_txt'").fetchone()[0]
+    assert marker == 'true'
+
+
+def test_legacy_generated_candidates_txt_not_reimported_after_marker(tmp_path, write_lines):
+    root = tmp_path / 'feedback' / 'permutation'
+    root.mkdir(parents=True)
+    write_lines(root / 'generated_candidates.txt', ['spf0'])
+    state = FeedbackQueueState(tmp_path, 'permutation')
+    assert state.generated_candidates_count() == 1
+    write_lines(root / 'generated_candidates.txt', ['spf0', 'spf1'])
+    state = FeedbackQueueState(tmp_path, 'permutation')
+    assert state.generated_candidates_count() == 1
+
+
+def test_generated_candidates_count_does_not_load_text_ledger(tmp_path, monkeypatch):
+    state = FeedbackQueueState(tmp_path, 'permutation')
+    state.enqueue_generated_candidates(['spf0'])
+    def boom():
+        raise AssertionError('full generated ledger load should not be used')
+    monkeypatch.setattr(state, 'load_generated_candidates', boom)
+    assert state.generated_candidates_count() == 1

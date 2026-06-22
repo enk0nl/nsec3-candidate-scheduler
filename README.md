@@ -43,7 +43,7 @@ After each slice, newly cracked names are expanded into both `<discovered>.<comm
 
 A `parent_domain_feedback` arm observes cracked DNS names during warm-up and adaptive phases, but only runs during the adaptive phase. For every newly cracked multi-label name, it enqueues parent names formed only by repeatedly removing the leftmost label. For example, `dev.api.test` generates `api.test` and `test`; a single-label discovery such as `test` generates nothing.
 
-Optional settings are `min_parent_labels` (default `1`), `max_parents_per_discovery` (default `null`), and `include_single_label_parent` (default `true`). Setting `include_single_label_parent` to `false` makes the effective minimum parent length at least two labels, so `dev.api.test` generates `api.test` but not `test`. The arm uses feedback state files under `feedback/parent-domain/`, including `queue.txt`, `generated_candidates.txt`, `expanded_bases.txt`, `slice_candidates.txt`, and `active_slice.json`; `generated_candidates.txt` is a generated-candidate dedupe ledger, not a record of tested or cracked candidates. Enable `debug_expansions` with an optional `debug_sample_size` (default `20`) to include generated-parent samples and per-base expansion records that split skips into already-cracked, queued, and generated-candidate reasons.
+Optional settings are `min_parent_labels` (default `1`), `max_parents_per_discovery` (default `null`), and `include_single_label_parent` (default `true`). Setting `include_single_label_parent` to `false` makes the effective minimum parent length at least two labels, so `dev.api.test` generates `api.test` but not `test`. The arm uses feedback state files under `feedback/parent-domain/`, including `queue.txt`, `generated_candidates.sqlite` (default dedupe state), optional `generated_candidates.txt` audit output, `expanded_bases.txt`, `slice_candidates.txt`, and `active_slice.json`; generated-candidate dedupe state is not a record of tested or cracked candidates. Enable `debug_expansions` with an optional `debug_sample_size` (default `20`) to include generated-parent samples and per-base expansion records that split skips into already-cracked, queued, and generated-candidate reasons.
 
 ## Scheduling modes
 
@@ -112,7 +112,7 @@ Each run writes to `--out-dir`:
 - `jobs.jsonl` (per-slice execution metrics)
 - `hits.jsonl` (newly cracked entries)
 - `run_summary.json` (final aggregate summary)
-- `feedback/<arm>/queue.txt`, `feedback/<arm>/generated_candidates.txt`, `feedback/<arm>/expanded_bases.txt`, `feedback/<arm>/slice_candidates.txt`, and `feedback/<arm>/active_slice.json` when a feedback arm is configured
+- `feedback/<arm>/queue.txt`, `feedback/<arm>/generated_candidates.sqlite`, optional `feedback/<arm>/generated_candidates.txt` audit output, `feedback/<arm>/expanded_bases.txt`, `feedback/<arm>/slice_candidates.txt`, and `feedback/<arm>/active_slice.json` when a feedback arm is configured
 
 `jobs.jsonl` now includes parsed hashcat status fields (progress/speed/recovery/status/session/runtime estimates) when available, with `null` values when unavailable.
 
@@ -169,7 +169,7 @@ For `k2._domainkey.example`, the prefix model learns `_domainkey -> k2` and `exa
 
 ## Enabling predictive_prefix and predictive_suffix arms
 
-Predictive arms are never injected automatically. Add each arm explicitly to the config. Each arm has independent scheduling state in a per-arm directory, for example `feedback/predictive-prefix/queue.txt`, `feedback/predictive-prefix/generated_candidates.txt`, and `feedback/predictive-prefix/expanded_bases.txt`.
+Predictive arms are never injected automatically. Add each arm explicitly to the config. Each arm has independent scheduling state in a per-arm directory, for example `feedback/predictive-prefix/queue.txt`, `feedback/predictive-prefix/generated_candidates.sqlite`, and `feedback/predictive-prefix/expanded_bases.txt`.
 
 See `example_config.json` for a complete example with all supported arm types, including `predictive_prefix` and `predictive_suffix`.
 

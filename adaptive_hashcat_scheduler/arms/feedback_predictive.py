@@ -17,7 +17,7 @@ class PredictiveFeedbackArm(Arm):
 
     def _queue(self, context) -> FeedbackQueueState:
         if self.queue_state is None or str(self.queue_state.out_dir) != context.out_dir:
-            self.queue_state = FeedbackQueueState(context.out_dir, self.name)
+            self.queue_state = FeedbackQueueState(context.out_dir, self.name, self.config)
         return self.queue_state
 
     def _empty_metrics(self):
@@ -38,9 +38,9 @@ class PredictiveFeedbackArm(Arm):
 
     def on_new_discoveries(self, discoveries, context) -> dict[str, Any]:
         q = self._queue(context)
-        generated = q.load_generated_candidates()
         queued = set(q.load_queue())
         expanded = q.load_expanded_bases()
+        expansion_seen: set[str] = set()
         to_enqueue, bases = [], []
         metrics = self._empty_metrics()
         for raw in discoveries:
@@ -62,11 +62,15 @@ class PredictiveFeedbackArm(Arm):
                 cand = normalize_dns_name(cand)
                 if cand is None:
                     metrics['rejected_candidates'] += 1; continue
-                if cand in generated or cand in queued:
+                if cand in queued or cand in expansion_seen:
                     metrics['duplicates_skipped'] += 1; continue
-                generated.add(cand); queued.add(cand); to_enqueue.append(cand)
+                expansion_seen.add(cand); queued.add(cand); to_enqueue.append(cand)
             expanded.add(base); bases.append(base); metrics['bases_expanded'] += 1
-        metrics['candidates_enqueued'] = q.append_candidates(to_enqueue)
+        enq_stats = q.enqueue_generated_candidates(to_enqueue)
+        metrics['candidates_enqueued'] = enq_stats['candidates_enqueued']
+        metrics['duplicates_skipped'] += enq_stats['candidates_skipped_generated_duplicate']
+        metrics['generated_candidates_backend'] = enq_stats['generated_candidates_backend']
+        metrics['candidates_skipped_generated_duplicate'] = enq_stats['candidates_skipped_generated_duplicate']
         q.mark_bases_expanded(bases)
         self.last_expansion = metrics
         return {f'{self.name}_{k}': v for k, v in metrics.items()}

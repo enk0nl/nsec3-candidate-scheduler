@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
+
+
+_WARNED: set[tuple[str, str]] = set()
 
 
 def safe_arm_name(name: str) -> str:
@@ -15,30 +19,114 @@ def safe_arm_name(name: str) -> str:
 class FeedbackQueueState:
     """Per-arm feedback queue and resumable active-slice state."""
 
-    def __init__(self, out_dir: str | Path, arm_name: str) -> None:
+    def __init__(self, out_dir: str | Path, arm_name: str, config: dict[str, Any] | None = None) -> None:
         self.out_dir = Path(out_dir)
         self.arm_name = arm_name
+        self.config = config or {}
+        self.generated_candidates_backend = str(self.config.get('generated_candidates_backend', 'sqlite')).lower()
+        if self.generated_candidates_backend not in {'sqlite', 'text', 'none'}:
+            raise ValueError(f'unsupported generated_candidates_backend={self.generated_candidates_backend!r}')
+        self.retain_generated_candidates_text = bool(self.config.get('retain_generated_candidates_text', False))
+        self.sqlite_insert_batch_size = max(1, int(self.config.get('sqlite_insert_batch_size', 10000)))
+        self.feedback_disk_warning_bytes = int(self.config.get('feedback_disk_warning_bytes', 104857600))
         self.safe_arm_name = safe_arm_name(arm_name)
         self.root = self.out_dir / 'feedback' / self.safe_arm_name
         self.queue_path = self.root / 'queue.txt'
         self.generated_path = self.root / 'generated_candidates.txt'
+        self.generated_sqlite_path = self.root / 'generated_candidates.sqlite'
         self.expanded_path = self.root / 'expanded_bases.txt'
         self.slice_path = self.root / 'slice_candidates.txt'
         self.active_slice_path = self.root / 'active_slice.json'
         self.debug_expansions_path = self.root / 'debug_expansions.jsonl'
         self.root.mkdir(parents=True, exist_ok=True)
-        for p in (self.queue_path, self.generated_path, self.expanded_path, self.slice_path, self.debug_expansions_path):
+        for p in (self.queue_path, self.expanded_path, self.slice_path, self.debug_expansions_path):
             p.touch(exist_ok=True)
+        if self.generated_candidates_backend == 'text' or self.retain_generated_candidates_text:
+            self.generated_path.touch(exist_ok=True)
         if not self.active_slice_path.exists():
             self.save_active_slice({'active': False})
+        if self.generated_candidates_backend == 'sqlite':
+            self._init_generated_sqlite()
+            self._import_legacy_generated_candidates_if_needed()
+        elif self.generated_candidates_backend == 'text':
+            self._warn_once('text-backend', f'[feedback] warning arm={self.arm_name} generated_candidates_backend=text may consume significant disk and memory')
+        elif self.generated_candidates_backend == 'none':
+            self._warn_once('none-backend', f'[feedback] warning arm={self.arm_name} generated_candidates_backend=none disables persistent generated-candidate dedupe')
+        self.warn_large_state_files()
+
+    def _warn_once(self, key: str, msg: str) -> None:
+        marker = (self.safe_arm_name, key)
+        if marker not in _WARNED:
+            print(msg, flush=True)
+            _WARNED.add(marker)
+
+    def warn_large_state_files(self) -> None:
+        for path in (self.queue_path, self.slice_path, self.generated_path):
+            try:
+                size = path.stat().st_size
+            except FileNotFoundError:
+                continue
+            if size <= self.feedback_disk_warning_bytes:
+                continue
+            suffix = '; consider generated_candidates_backend=sqlite' if path.name == 'generated_candidates.txt' else ''
+            self._warn_once(f'large:{path.name}', f'[feedback] warning arm={self.arm_name} file={path.name} size={size}{suffix}')
+
+    def _connect_generated_sqlite(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.generated_sqlite_path)
+        conn.execute('PRAGMA journal_mode=WAL')
+        return conn
+
+    def _init_generated_sqlite(self) -> None:
+        with self._connect_generated_sqlite() as conn:
+            conn.execute('CREATE TABLE IF NOT EXISTS generated_candidates (candidate TEXT PRIMARY KEY)')
+            conn.execute('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)')
+            conn.executemany('INSERT OR REPLACE INTO metadata(key,value) VALUES (?,?)', [
+                ('schema_version', '1'), ('arm_name', self.arm_name), ('backend', 'sqlite')])
+
+    def _metadata_get(self, conn: sqlite3.Connection, key: str) -> str | None:
+        row = conn.execute('SELECT value FROM metadata WHERE key=?', (key,)).fetchone()
+        return None if row is None else str(row[0])
+
+    def _import_legacy_generated_candidates_if_needed(self) -> None:
+        if not self.generated_path.exists() or self.generated_path.stat().st_size == 0:
+            return
+        with self._connect_generated_sqlite() as conn:
+            if self._metadata_get(conn, 'imported_generated_candidates_txt') == 'true':
+                return
+            existing = conn.execute('SELECT COUNT(*) FROM generated_candidates').fetchone()[0]
+            if existing:
+                return
+            print(f'[feedback] importing legacy generated_candidates.txt into sqlite arm={self.arm_name}', flush=True)
+            imported = 0
+            batch: list[tuple[str]] = []
+            with self.generated_path.open('r', encoding='utf-8', errors='replace') as f:
+                for raw in f:
+                    value = raw.strip()
+                    if not value:
+                        continue
+                    batch.append((value,))
+                    if len(batch) >= self.sqlite_insert_batch_size:
+                        before = conn.total_changes
+                        conn.executemany('INSERT OR IGNORE INTO generated_candidates(candidate) VALUES (?)', batch)
+                        imported += conn.total_changes - before
+                        batch.clear()
+                if batch:
+                    before = conn.total_changes
+                    conn.executemany('INSERT OR IGNORE INTO generated_candidates(candidate) VALUES (?)', batch)
+                    imported += conn.total_changes - before
+            conn.execute('INSERT OR REPLACE INTO metadata(key,value) VALUES (?,?)', ('imported_generated_candidates_txt', 'true'))
+            print(f'[feedback] imported legacy generated candidates arm={self.arm_name} count={imported}', flush=True)
 
     def queue_has_items(self) -> bool:
         return bool(self.load_queue())
 
     def queue_size_lines(self) -> int:
+        # TODO: queue.txt is still full-file loaded/re-written for slicing; large queues may need a SQLite queue or append-only cursor design later.
         return len(self.load_queue())
 
     def _load_lines(self, path: Path) -> list[str]:
+        if not path.exists():
+            return []
         with path.open('r', encoding='utf-8', errors='replace') as f:
             return [line.rstrip('\n') for line in f if line.rstrip('\n')]
 
@@ -55,6 +143,7 @@ class FeedbackQueueState:
         values = [str(i) for i in items if str(i)]
         if not values:
             return 0
+        path.parent.mkdir(parents=True, exist_ok=True)
         with path.open('a', encoding='utf-8') as f:
             for value in values:
                 f.write(f'{value}\n')
@@ -70,22 +159,75 @@ class FeedbackQueueState:
         self._append_lines(self.queue_path, items)
 
     def load_generated_candidates(self) -> set[str]:
+        if self.generated_candidates_backend == 'sqlite':
+            with self._connect_generated_sqlite() as conn:
+                return {str(row[0]) for row in conn.execute('SELECT candidate FROM generated_candidates')}
         return self._load_set(self.generated_path)
 
     def append_generated_candidates(self, items: Iterable[str]) -> None:
+        if self.generated_candidates_backend == 'sqlite':
+            new, _ = self.mark_generated_candidates(items)
+            if self.retain_generated_candidates_text:
+                self._append_lines(self.generated_path, new)
+            return
         self._append_lines(self.generated_path, items)
+
+    def mark_generated_candidates(self, candidates: Iterable[str]) -> tuple[list[str], dict[str, Any]]:
+        values = [str(c) for c in candidates if str(c)]
+        stats = {'generated_candidates_backend': self.generated_candidates_backend, 'candidates_seen': len(values), 'candidates_new': 0, 'candidates_skipped_generated_duplicate': 0}
+        seen_batch: set[str] = set()
+        ordered: list[str] = []
+        for value in values:
+            if value in seen_batch:
+                stats['candidates_skipped_generated_duplicate'] += 1
+                continue
+            seen_batch.add(value); ordered.append(value)
+        if self.generated_candidates_backend == 'none':
+            stats['candidates_new'] = len(ordered)
+            return ordered, stats
+        if self.generated_candidates_backend == 'text':
+            generated = self.load_generated_candidates()
+            new = [v for v in ordered if v not in generated]
+            stats['candidates_new'] = len(new)
+            stats['candidates_skipped_generated_duplicate'] += len(ordered) - len(new)
+            self.append_generated_candidates(new)
+            return new, stats
+        new: list[str] = []
+        with self._connect_generated_sqlite() as conn:
+            for i in range(0, len(ordered), self.sqlite_insert_batch_size):
+                for value in ordered[i:i + self.sqlite_insert_batch_size]:
+                    cur = conn.execute('INSERT OR IGNORE INTO generated_candidates(candidate) VALUES (?)', (value,))
+                    if cur.rowcount == 1:
+                        new.append(value)
+                    else:
+                        stats['candidates_skipped_generated_duplicate'] += 1
+        stats['candidates_new'] = len(new)
+        return new, stats
+
+    def enqueue_generated_candidates(self, candidates: Iterable[str]) -> dict[str, Any]:
+        new, stats = self.mark_generated_candidates(candidates)
+        enqueued = self._append_lines(self.queue_path, new)
+        if self.generated_candidates_backend == 'sqlite' and self.retain_generated_candidates_text:
+            self._append_lines(self.generated_path, new)
+        stats['candidates_enqueued'] = enqueued
+        return stats
+
+    def append_candidates(self, candidates: Iterable[str]) -> int:
+        return int(self.enqueue_generated_candidates(candidates)['candidates_enqueued'])
+
+    def generated_candidates_count(self) -> int | None:
+        if self.generated_candidates_backend == 'sqlite':
+            with self._connect_generated_sqlite() as conn:
+                return int(conn.execute('SELECT COUNT(*) FROM generated_candidates').fetchone()[0])
+        if self.generated_candidates_backend == 'text':
+            return sum(1 for _ in self.generated_path.open('r', encoding='utf-8', errors='replace')) if self.generated_path.exists() else 0
+        return None
 
     def load_expanded_bases(self) -> set[str]:
         return self._load_set(self.expanded_path)
 
     def append_expanded_bases(self, items: Iterable[str]) -> None:
         self._append_lines(self.expanded_path, items)
-
-    def append_candidates(self, candidates: Iterable[str]) -> int:
-        values = list(candidates)
-        self.append_to_queue(values)
-        self.append_generated_candidates(values)
-        return len(values)
 
     def mark_bases_expanded(self, bases: Iterable[str]) -> int:
         values = list(bases)

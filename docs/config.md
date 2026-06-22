@@ -16,7 +16,60 @@ Feedback runtime state is written under:
 <out_dir>/feedback/<arm>/
 ```
 
-For example, feedback arms use `feedback/<arm>/queue.txt` and `feedback/<arm>/generated_candidates.txt`. The `generated_candidates.txt` file is a generated-candidate dedupe ledger; it is not tested, cracked, or validated history.
+For example, feedback arms use `feedback/<arm>/queue.txt`, `feedback/<arm>/expanded_bases.txt`, `feedback/<arm>/slice_candidates.txt`, `feedback/<arm>/active_slice.json`, and generated-candidate dedupe state. Historically, `generated_candidates.txt` was both the persistent dedupe ledger and an audit file. The default generated-candidate dedupe backend is now SQLite, stored at `feedback/<arm>/generated_candidates.sqlite`, so large feedback arms do not need to load the full generated-candidate ledger into memory. `queue.txt` and `slice_candidates.txt` remain operational state; large `queue.txt` files are still a separate scalability consideration because queue slicing currently reads and rewrites the text queue.
+
+Generated-candidate dedupe settings for feedback arms:
+
+- `generated_candidates_backend`: `"sqlite"` (default), `"text"`, or `"none"`.
+- `retain_generated_candidates_text`: `false` by default. When `true` with the SQLite backend, newly accepted generated candidates are also appended to `generated_candidates.txt` as optional audit/debug output, but SQLite remains the dedupe source of truth.
+- `sqlite_insert_batch_size`: default `10000`.
+- `retain_completed_slices`: default `false`; completed active slice files are cleared rather than retained. Runtime-reached slices keep `slice_candidates.txt` and `active_slice.json` so they can resume.
+- `feedback_disk_warning_bytes`: default `104857600` (100 MiB), used to warn once for large feedback state files such as `queue.txt`, `slice_candidates.txt`, or legacy/audit `generated_candidates.txt`.
+
+SQLite is recommended for normal runs. The `text` backend preserves legacy behavior where `generated_candidates.txt` is the primary dedupe ledger, but it can consume significant disk and memory for large feedback arms. The `none` backend disables persistent generated-candidate dedupe and may duplicate historical generation work; current-batch, queued, active-slice, and already-cracked skips still apply where implemented by the arm.
+
+Default SQLite feedback arm example:
+
+```json
+{
+  "name": "feedback/permutation-numeric",
+  "type": "permutation",
+  "generated_candidates_backend": "sqlite",
+  "retain_generated_candidates_text": false,
+  "retain_completed_slices": false
+}
+```
+
+SQLite with plaintext audit output:
+
+```json
+{
+  "name": "feedback/permutation-numeric",
+  "type": "permutation",
+  "generated_candidates_backend": "sqlite",
+  "retain_generated_candidates_text": true
+}
+```
+
+Legacy text dedupe backend:
+
+```json
+{
+  "name": "feedback/permutation-numeric",
+  "type": "permutation",
+  "generated_candidates_backend": "text"
+}
+```
+
+No persistent generated-candidate dedupe:
+
+```json
+{
+  "name": "feedback/permutation-numeric",
+  "type": "permutation",
+  "generated_candidates_backend": "none"
+}
+```
 
 
 ## Dictionary and PCFG wordlist arms

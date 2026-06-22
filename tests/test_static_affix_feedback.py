@@ -51,3 +51,13 @@ def test_static_affix_loads_label_count_files(tmp_path, write_lines):
     assert _load_affixes(str(path), 10) == ['dev', 'staging']
     write_lines(path, ['dev', 'staging'])
     assert _load_affixes(str(path), 10) == ['dev', 'staging']
+
+
+def test_static_affix_does_not_call_load_generated_candidates_in_sqlite_mode(tmp_path, make_context, write_lines, monkeypatch):
+    ctx = make_context(tmp_path)
+    arm = _arm(tmp_path, write_lines)
+    def boom(self):
+        raise AssertionError('feedback arms must not load the generated ledger in sqlite mode')
+    monkeypatch.setattr('adaptive_hashcat_scheduler.feedback.queue.FeedbackQueueState.load_generated_candidates', boom)
+    metrics = arm.on_new_discoveries(['api.test'], ctx)
+    assert metrics['static-affix-top50_candidates_enqueued'] == 3
