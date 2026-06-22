@@ -1,4 +1,4 @@
-from adaptive_hashcat_scheduler.arms.permutation import PermutationArm
+from nsec3_candidate_scheduler.arms.permutation import PermutationArm
 
 
 def _spf_config():

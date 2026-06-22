@@ -5,7 +5,7 @@ from pathlib import Path
 import math
 from typing import DefaultDict
 
-from adaptive_hashcat_scheduler.feedback.normalize import normalize_dns_name
+from nsec3_candidate_scheduler.feedback.normalize import normalize_dns_name
 
 
 def trigrams(s: str) -> list[str]:

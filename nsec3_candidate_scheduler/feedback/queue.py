@@ -8,11 +8,11 @@ from typing import Any, Iterable
 
 _WARNED: set[tuple[str, str]] = set()
 
-from adaptive_hashcat_scheduler.naming import safe_name
+from nsec3_candidate_scheduler.naming import safe_name
 
 
 def safe_arm_name(name: str) -> str:
-    """Legacy alias; use adaptive_hashcat_scheduler.naming.safe_name in new code."""
+    """Legacy alias; use nsec3_candidate_scheduler.naming.safe_name in new code."""
     return safe_name(name)
 
 

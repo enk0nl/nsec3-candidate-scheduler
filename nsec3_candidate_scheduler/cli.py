@@ -1,12 +1,12 @@
 from __future__ import annotations
 import argparse
-from adaptive_hashcat_scheduler.scheduler import run_scheduler
-from adaptive_hashcat_scheduler.feedback.train_pairs import train_to_files
-from adaptive_hashcat_scheduler.feedback.predictive_model import PredictiveModel
-from adaptive_hashcat_scheduler.feedback.common_affixes import mine_to_files
+from nsec3_candidate_scheduler.scheduler import run_scheduler
+from nsec3_candidate_scheduler.feedback.train_pairs import train_to_files
+from nsec3_candidate_scheduler.feedback.predictive_model import PredictiveModel
+from nsec3_candidate_scheduler.feedback.common_affixes import mine_to_files
 
 def main(argv=None):
-    ap=argparse.ArgumentParser(prog='adaptive_hashcat_scheduler')
+    ap=argparse.ArgumentParser(prog='nsec3-candidate-scheduler')
     sub=ap.add_subparsers(dest='cmd', required=True)
     r=sub.add_parser('run'); r.add_argument('--hashes',required=True); r.add_argument('--hash-mode',type=int,default=8300); r.add_argument('--config',required=True); r.add_argument('--out-dir',required=True); r.add_argument('--schedule',choices=['sequential','round_robin','adaptive'],required=True); r.add_argument('--total-slices',type=int,required=True); r.add_argument('--slice-seconds',type=int,default=60); r.add_argument('--alpha',type=float); r.add_argument('--epsilon',type=float); r.add_argument('--random-seed',type=int); r.add_argument('--default-limit',type=int,default=1000000); r.add_argument('--hashcat-bin',default='hashcat'); r.add_argument('--quiet',action='store_true'); r.add_argument('--verbose',action='store_true'); r.add_argument('--no-optimized-kernels',action='store_true')
     t=sub.add_parser('train-predictive-feedback'); t.add_argument('--input',required=True); t.add_argument('--input-format',choices=['auto','potfile','names'],default='auto'); t.add_argument('--output-prefix-model',required=True); t.add_argument('--output-suffix-model',required=True)

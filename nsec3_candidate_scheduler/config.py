@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from adaptive_hashcat_scheduler.arms.osint_common import normalize_osint_domain
-from adaptive_hashcat_scheduler.arms.amass_osint import parse_domains
-from adaptive_hashcat_scheduler.arms.registry import SUPPORTED_ARM_TYPES, FEEDBACK_TYPES, OSINT_TYPES
+from nsec3_candidate_scheduler.arms.osint_common import normalize_osint_domain
+from nsec3_candidate_scheduler.arms.amass_osint import parse_domains
+from nsec3_candidate_scheduler.arms.registry import SUPPORTED_ARM_TYPES, FEEDBACK_TYPES, OSINT_TYPES
 
 SUPPORTED = SUPPORTED_ARM_TYPES
 

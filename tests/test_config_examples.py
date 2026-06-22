@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 
-from adaptive_hashcat_scheduler.config import load_config
+from nsec3_candidate_scheduler.config import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = ROOT / 'example_config.json'
@@ -170,7 +170,7 @@ def test_example_config_has_no_mismatched_candidate_count():
 
 
 def test_safe_name_examples():
-    from adaptive_hashcat_scheduler.naming import safe_name, arm_family, arm_short_name
+    from nsec3_candidate_scheduler.naming import safe_name, arm_family, arm_short_name
     assert safe_name('wordlist/seclists') == 'wordlist-seclists'
     assert safe_name('wordlist/pcfg-1b') == 'wordlist-pcfg-1b'
     assert safe_name('feedback/predictive-prefix') == 'feedback-predictive-prefix'

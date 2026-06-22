@@ -1,4 +1,4 @@
-from adaptive_hashcat_scheduler.arms.static_affix_feedback import StaticAffixFeedbackArm, _load_affixes
+from nsec3_candidate_scheduler.arms.static_affix_feedback import StaticAffixFeedbackArm, _load_affixes
 
 
 def _arm(tmp_path, write_lines, config=None):
@@ -58,7 +58,7 @@ def test_static_affix_does_not_call_load_generated_candidates_in_sqlite_mode(tmp
     arm = _arm(tmp_path, write_lines)
     def boom(self):
         raise AssertionError('feedback arms must not load the generated ledger in sqlite mode')
-    monkeypatch.setattr('adaptive_hashcat_scheduler.feedback.queue.FeedbackQueueState.load_generated_candidates', boom)
+    monkeypatch.setattr('nsec3_candidate_scheduler.feedback.queue.FeedbackQueueState.load_generated_candidates', boom)
     metrics = arm.on_new_discoveries(['api.test'], ctx)
     assert metrics['static-affix-top50_candidates_enqueued'] == 3
 

@@ -12,7 +12,7 @@
 | `feedback/<safe-arm-name>/` | Feedback queue and dedupe state. |
 | `osint/<safe-arm-name>/` | OSINT process state and candidate wordlists. |
 
-Configured arm names are preserved in logs as `arm`. File paths use `adaptive_hashcat_scheduler.naming.safe_name()`, so `feedback/parent-domain` maps to `feedback-parent-domain`. Arm renames are state-breaking; use a fresh `out_dir` after renaming arms.
+Configured arm names are preserved in logs as `arm`. File paths use `nsec3_candidate_scheduler.naming.safe_name()`, so `feedback/parent-domain` maps to `feedback-parent-domain`. Arm renames are state-breaking; use a fresh `out_dir` after renaming arms.
 
 ## `jobs.jsonl`
 

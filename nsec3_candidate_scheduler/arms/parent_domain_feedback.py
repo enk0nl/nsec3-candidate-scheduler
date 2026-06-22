@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from adaptive_hashcat_scheduler.arms.base import Arm, SliceResult
-from adaptive_hashcat_scheduler.feedback.execution import run_feedback_dictionary_slice
-from adaptive_hashcat_scheduler.feedback.normalize import normalize_dns_name
-from adaptive_hashcat_scheduler.feedback.queue import FeedbackQueueState
-from adaptive_hashcat_scheduler.hashcat.potfile import iter_potfile_cracks
+from nsec3_candidate_scheduler.arms.base import Arm, SliceResult
+from nsec3_candidate_scheduler.feedback.execution import run_feedback_dictionary_slice
+from nsec3_candidate_scheduler.feedback.normalize import normalize_dns_name
+from nsec3_candidate_scheduler.feedback.queue import FeedbackQueueState
+from nsec3_candidate_scheduler.hashcat.potfile import iter_potfile_cracks
 
 
 class ParentDomainFeedbackArm(Arm):

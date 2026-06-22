@@ -1,5 +1,5 @@
-from adaptive_hashcat_scheduler.feedback.execution import candidate_cursor_from_summary, run_feedback_dictionary_slice
-from adaptive_hashcat_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
+from nsec3_candidate_scheduler.feedback.execution import candidate_cursor_from_summary, run_feedback_dictionary_slice
+from nsec3_candidate_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
 
 
 def test_progress_scaled_by_salts(fake_hashcat_summary):
@@ -26,7 +26,7 @@ def test_feedback_runtime_reached_unknown_progress_does_not_reset_skip(monkeypat
     state = arm._queue(ctx)
     write_lines(state.slice_path, ['x'] * 1000)
     state.save_active_slice({'active': True, 'slice_file': 'slice_candidates.txt', 'total_candidates': 1000, 'skip': 100})
-    monkeypatch.setattr('adaptive_hashcat_scheduler.feedback.execution.run_cmd', lambda cmd: (4, '{}', ''))
+    monkeypatch.setattr('nsec3_candidate_scheduler.feedback.execution.run_cmd', lambda cmd: (4, '{}', ''))
     result = run_feedback_dictionary_slice(arm, ctx)
     assert result.valid_work is False
     assert result.execution_status == 'failed_no_progress'

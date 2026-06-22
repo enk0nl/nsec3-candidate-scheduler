@@ -6,7 +6,7 @@ from typing import Iterable, TextIO
 import re
 import sys
 
-from adaptive_hashcat_scheduler.feedback.normalize import normalize_dns_name
+from nsec3_candidate_scheduler.feedback.normalize import normalize_dns_name
 
 _LABEL_RE = re.compile(r'^[a-z0-9_-]+$')
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from adaptive_hashcat_scheduler.feedback.normalize import normalize_dns_name
+from nsec3_candidate_scheduler.feedback.normalize import normalize_dns_name
 
 
 def normalize_osint_domain(value: str) -> str | None:

@@ -1,4 +1,4 @@
-from adaptive_hashcat_scheduler.feedback.queue import FeedbackQueueState, safe_arm_name
+from nsec3_candidate_scheduler.feedback.queue import FeedbackQueueState, safe_arm_name
 
 
 def test_feedback_state_uses_per_arm_subdirectory(tmp_path, assert_no_root_feedback_files):

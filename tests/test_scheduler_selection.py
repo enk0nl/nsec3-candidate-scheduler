@@ -1,10 +1,10 @@
 import argparse
 import json
 
-from adaptive_hashcat_scheduler.arms.base import Arm
-from adaptive_hashcat_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
-from adaptive_hashcat_scheduler.feedback.queue import FeedbackQueueState
-from adaptive_hashcat_scheduler.scheduler import SchedulerContext, _feedback_availability, choose_arm, run_scheduler
+from nsec3_candidate_scheduler.arms.base import Arm
+from nsec3_candidate_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
+from nsec3_candidate_scheduler.feedback.queue import FeedbackQueueState
+from nsec3_candidate_scheduler.scheduler import SchedulerContext, _feedback_availability, choose_arm, run_scheduler
 
 
 def test_empty_feedback_arm_not_selected_by_forced_cadence(tmp_path, make_context):
@@ -62,8 +62,8 @@ def test_skipped_result_does_not_consume_completed_slice(monkeypatch, tmp_path, 
             return fake_slice_result(executed=True, valid_work=True, runtime_seconds=1.0)
 
     arms = [SkippingArm(), ExecutingArm()]
-    monkeypatch.setattr('adaptive_hashcat_scheduler.scheduler.load_config', lambda path: {'alpha': 1.0, 'epsilon': 0.0, 'arms': [{'name': 'skip'}, {'name': 'run'}]})
-    monkeypatch.setattr('adaptive_hashcat_scheduler.scheduler.make_arm', lambda cfg: arms[0] if cfg['name'] == 'skip' else arms[1])
+    monkeypatch.setattr('nsec3_candidate_scheduler.scheduler.load_config', lambda path: {'alpha': 1.0, 'epsilon': 0.0, 'arms': [{'name': 'skip'}, {'name': 'run'}]})
+    monkeypatch.setattr('nsec3_candidate_scheduler.scheduler.make_arm', lambda cfg: arms[0] if cfg['name'] == 'skip' else arms[1])
     config = tmp_path / 'config.json'; config.write_text('{}', encoding='utf-8')
     hashes = tmp_path / 'hashes.txt'; hashes.write_text('hash\n', encoding='utf-8')
     out_dir = tmp_path / 'out'

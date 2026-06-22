@@ -3,11 +3,11 @@ from dataclasses import dataclass
 import datetime as dt, json, os, random, shutil, time
 from typing import Any
 
-from adaptive_hashcat_scheduler.config import load_config
-from adaptive_hashcat_scheduler.hashcat.potfile import iter_potfile_cracks
-from adaptive_hashcat_scheduler.hashcat.runner import EXIT_MEANINGS
-from adaptive_hashcat_scheduler.arms.registry import FEEDBACK_TYPES, OSINT_TYPES, make_arm
-from adaptive_hashcat_scheduler.naming import safe_name, arm_family, arm_short_name
+from nsec3_candidate_scheduler.config import load_config
+from nsec3_candidate_scheduler.hashcat.potfile import iter_potfile_cracks
+from nsec3_candidate_scheduler.hashcat.runner import EXIT_MEANINGS
+from nsec3_candidate_scheduler.arms.registry import FEEDBACK_TYPES, OSINT_TYPES, make_arm
+from nsec3_candidate_scheduler.naming import safe_name, arm_family, arm_short_name
 
 @dataclass
 class SchedulerContext:

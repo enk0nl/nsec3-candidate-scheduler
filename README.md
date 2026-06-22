@@ -1,6 +1,6 @@
-# adaptive-hashcat-scheduler
+# NSEC3 Candidate Scheduler
 
-Adaptive scheduler for hashcat-based NSEC3 candidate validation experiments. It runs configured candidate-generation arms, measures discoveries per slice, and allocates later slices with epsilon-greedy scoring.
+Adaptive scheduler for DNS/NSEC3 candidate generation and hashcat-based validation. It runs configured candidate-generation arms, measures discoveries per slice, and allocates later slices with epsilon-greedy scoring.
 
 ## Requirements
 
@@ -17,14 +17,14 @@ This repository does not currently include model files under `models/`. Predicti
 python3 -m pip install -e ".[test]"
 ```
 
-The package installs the `adaptive-hashcat-scheduler` console script. The module entrypoint remains available with `python3 -m adaptive_hashcat_scheduler`.
+The package installs the `nsec3-candidate-scheduler` console script. The module entrypoint remains available with `python3 -m nsec3_candidate_scheduler`.
 
 ## Quick start
 
 `example_config.json` is a reference config. Enabled arms use tiny smoke-test wordlists under `wordlists/`; disabled arms show placeholder paths for experiment-scale inputs.
 
 ```sh
-python3 -m adaptive_hashcat_scheduler run \
+python3 -m nsec3_candidate_scheduler run \
   --config example_config.json \
   --hashes /path/to/hashes.txt \
   --hash-mode 8300 \
@@ -69,4 +69,4 @@ python3 -m pytest -v tests
 
 ## Safety and scope
 
-The scheduler launches hashcat and optional OSINT binaries configured by the operator. It does not manage OSINT provider credentials, does not bundle large wordlists or models, and does not auto-migrate old run directories after arm names change. Use a fresh `out_dir` after renaming arms.
+NSEC3 Candidate Scheduler launches hashcat and optional OSINT binaries configured by the operator. It does not manage OSINT provider credentials, does not bundle large wordlists or models, and does not auto-migrate old run directories after arm names change. Use a fresh `out_dir` after renaming arms.

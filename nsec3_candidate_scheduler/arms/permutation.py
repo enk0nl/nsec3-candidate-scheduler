@@ -6,10 +6,10 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
-from adaptive_hashcat_scheduler.arms.base import Arm, SliceResult
-from adaptive_hashcat_scheduler.feedback.normalize import normalize_dns_name
-from adaptive_hashcat_scheduler.feedback.queue import FeedbackQueueState
-from adaptive_hashcat_scheduler.feedback.execution import run_feedback_dictionary_slice
+from nsec3_candidate_scheduler.arms.base import Arm, SliceResult
+from nsec3_candidate_scheduler.feedback.normalize import normalize_dns_name
+from nsec3_candidate_scheduler.feedback.queue import FeedbackQueueState
+from nsec3_candidate_scheduler.feedback.execution import run_feedback_dictionary_slice
 
 _PATTERNS = [
     re.compile(r'^([a-z][a-z-]*[a-z])([-_])([0-9]+)$'),
@@ -70,7 +70,7 @@ class PermutationArm(Arm):
     def _cursor_path(self, context) -> Path:
         if self.queue_state is not None and str(self.queue_state.out_dir) == context.out_dir:
             return self.queue_state.root / 'cursor.json'
-        from adaptive_hashcat_scheduler.naming import safe_name
+        from nsec3_candidate_scheduler.naming import safe_name
         return Path(context.out_dir) / 'feedback' / safe_name(self.name) / 'cursor.json'
 
     def _read_cursor(self, context) -> dict[str, Any]:

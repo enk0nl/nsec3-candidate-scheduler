@@ -1,6 +1,6 @@
-from adaptive_hashcat_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
-from adaptive_hashcat_scheduler.feedback.execution import run_feedback_dictionary_slice
-from adaptive_hashcat_scheduler.feedback.queue import FeedbackQueueState
+from nsec3_candidate_scheduler.arms.parent_domain_feedback import ParentDomainFeedbackArm
+from nsec3_candidate_scheduler.feedback.execution import run_feedback_dictionary_slice
+from nsec3_candidate_scheduler.feedback.queue import FeedbackQueueState
 
 
 def test_prepare_active_slice_moves_selected_prefix(tmp_path, read_lines, read_json):
@@ -52,7 +52,7 @@ def test_invalid_active_slice_skip_is_cleared_without_hashcat(monkeypatch, tmp_p
         nonlocal launched
         launched = True
         return 0, '', ''
-    monkeypatch.setattr('adaptive_hashcat_scheduler.feedback.execution.run_cmd', fail_if_launched)
+    monkeypatch.setattr('nsec3_candidate_scheduler.feedback.execution.run_cmd', fail_if_launched)
     result = run_feedback_dictionary_slice(arm, ctx)
     assert launched is False
     assert result.executed is False
