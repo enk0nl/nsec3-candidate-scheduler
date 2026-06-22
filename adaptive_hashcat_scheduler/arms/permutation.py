@@ -70,8 +70,8 @@ class PermutationArm(Arm):
     def _cursor_path(self, context) -> Path:
         if self.queue_state is not None and str(self.queue_state.out_dir) == context.out_dir:
             return self.queue_state.root / 'cursor.json'
-        from adaptive_hashcat_scheduler.feedback.queue import safe_arm_name
-        return Path(context.out_dir) / 'feedback' / safe_arm_name(self.name) / 'cursor.json'
+        from adaptive_hashcat_scheduler.naming import safe_name
+        return Path(context.out_dir) / 'feedback' / safe_name(self.name) / 'cursor.json'
 
     def _read_cursor(self, context) -> dict[str, Any]:
         path = self._cursor_path(context)

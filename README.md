@@ -1,194 +1,72 @@
-# Adaptive Hashcat Scheduler
+# adaptive-hashcat-scheduler
 
-A lightweight experimental scheduler for comparative hash cracking experiments under fixed runtime budgets. The primary target use case is NSEC3 hash cracking research. This repository is for controlled strategy-allocation evaluation, not for production cracking orchestration.
+Adaptive scheduler for hashcat-based NSEC3 candidate validation experiments. It runs configured candidate-generation arms, measures discoveries per slice, and allocates later slices with epsilon-greedy scoring.
 
-## Features
+## Requirements
 
-- Fixed runtime slices (default 60 seconds)
-- Multiple scheduling modes (`sequential`, `round_robin`, `adaptive`)
-- Reproducible scheduler decisions via fixed random seeds
-- Per-run potfile isolation in `--out-dir` (no default hashcat outfile)
-- Per-slice JSONL metrics logging
-- Per-job raw hashcat logs (`stdout`/`stderr`) in `hashcat_logs/`
-- Brute-force keyspace tracking (`hashcat --keyspace`)
-- Dictionary cursor tracking from hashcat status JSON for NSEC3-style salted cracking
+- Python 3.10+
+- hashcat available on `PATH` or passed with `--hashcat-bin`
+- Hash files and wordlists supplied by the operator
+- Optional OSINT tools: Amass and Subfinder
 
-## Simplified experiment model
+This repository does not currently include model files under `models/`. Predictive feedback arms require trained adjacent-label pair models, and static-affix feedback arms require mined prefix/suffix files.
 
-This scheduler is currently tuned for hashcat mode 8300 / NSEC3-style salted cracking. Arms are explicit dictionary, brute-force mask, or queue-driven feedback arms. Rewards remain `new discoveries / actual runtime`, with adaptive scores updated by alpha/epsilon bandit logic. Dictionary cursor tracking uses hashcat status JSON progress divided by `recovered_salts_total`; if that progress cannot be parsed, the dictionary cursor is not advanced. Feedback state lives under `<out_dir>/feedback/<arm>/`: discoveries expand each base once, enqueue generated candidates, and run resumable active slices from `slice_candidates.txt`. Optional `force_every_slices` cadence applies only after adaptive warm-up and only to available arms.
+## Install
 
-## Supported attack strategies
-
-- **Dictionary attacks** (`-a 0`)
-- **Pre-generated PCFG wordlists** (treated exactly as dictionary inputs)
-- **Brute-force mask attacks** (`-a 3`, one arm can run one or many explicit masks)
-- **Feedback attacks** (`type: "feedback"`) that expand newly cracked DNS names with configured common labels and run queued candidates as dictionary slices
-
-Current brute-force example targets RFC1035-compatible label characters: lowercase letters, digits, and hyphen.
-For `type: "brute_force"`, configure either:
-
-- `"mask": "?1?1?1?1?1"` (single mask), or
-- `"masks": ["?1?1?1", "?1?1?1?1", "?1?1?1?1?1"]` (multiple masks in order).
-
-Multiple masks are attempted in config order with independent per-mask keyspace/skip/exhausted state. This replaces using `--increment`, so resume/chunk behavior stays explicit and auditable (especially useful for DNS labels where short names like `www` require shorter masks).
-
-## Feedback arms
-
-Feedback arms are optional and are only registered when explicitly present in the config. Set `"enabled": false` to leave an arm out of scheduling. For the legacy common-label `"type": "feedback"` arm, `common_labels` is required and must be a non-empty list of strings. Feedback bases and common labels are normalized to lowercase and stripped of surrounding whitespace; single labels, multi-label names, underscores, hyphens, and digits are allowed. Empty names, leading/trailing dots, empty dot components, embedded whitespace, labels longer than 63 characters, and names longer than 253 characters are rejected.
-
-After each slice, newly cracked names are expanded into both `<discovered>.<common>` and `<common>.<discovered>` candidates, deduplicated through per-arm feedback state under `feedback/<arm>/`, and appended to that arm's `queue.txt`. Feedback-like arms (`feedback`, `predictive_prefix`, `predictive_suffix`, `permutation`, `static_affix_feedback`, and `parent_domain_feedback`) are eligible for normal selection only when they have runnable work and the queue has at least `min_queue_size` candidates (default `1`) or an active slice. When selected, pending queue entries move to `slice_candidates.txt` in the same per-arm directory and can resume from `active_slice.json` if a runtime-limited hashcat slice stops early.
-
-
-### Parent-domain feedback
-
-A `parent_domain_feedback` arm observes cracked DNS names during warm-up and adaptive phases, but only runs during the adaptive phase. For every newly cracked multi-label name, it enqueues parent names formed only by repeatedly removing the leftmost label. For example, `dev.api.test` generates `api.test` and `test`; a single-label discovery such as `test` generates nothing.
-
-Optional settings are `min_parent_labels` (default `1`), `max_parents_per_discovery` (default `null`), and `include_single_label_parent` (default `true`). Setting `include_single_label_parent` to `false` makes the effective minimum parent length at least two labels, so `dev.api.test` generates `api.test` but not `test`. The arm uses feedback state files under `feedback/parent-domain/`, including `queue.txt`, `generated_candidates.sqlite` (default dedupe state), optional `generated_candidates.txt` audit output, `expanded_bases.txt`, `slice_candidates.txt`, and `active_slice.json`; generated-candidate dedupe state is not a record of tested or cracked candidates. Enable `debug_expansions` with an optional `debug_sample_size` (default `20`) to include generated-parent samples and per-base expansion records that split skips into already-cracked, queued, and generated-candidate reasons.
-
-## Scheduling modes
-
-- **`sequential`**: divide `total_slices` into a fixed per-arm budget, then run each arm consecutively in config order.
-  - Budgeting rule: `total_slices // enabled_arms` per arm, with any remainder distributed in config order.
-  - If an arm exhausts early, its remaining assigned slices are skipped (not redistributed).
-- **`round_robin`**: rotate across non-exhausted arms.
-- **`adaptive`**: warm-up + nonstationary bandit-style score tracking.
-
-Adaptive mode uses:
-
-- One warm-up slice per non-exhausted arm, in config order
-- During warm-up, each arm uses an arm-local temporary potfile (`<out_dir>/warmup_potfiles/<arm_name>.pot`)
-- Reward per slice:
-  - Warm-up: `reward = arm_local_cracks / runtime_seconds`
-  - Adaptive phase: `reward = marginal_new_cracks / runtime_seconds` using shared `run.pot`
-
-- Exponential recency update:
-
-`score_new = score_old + alpha * (reward - score_old)`
-
-- Epsilon exploration for randomized arm selection
-
-Optional per-arm forced cadence can be configured with `"force_every_slices": N`, where `N` is a positive integer. Forced cadence applies only after adaptive warm-up: if an available arm has not run for at least `N` adaptive-phase slices, it is selected before normal epsilon-greedy selection. For feedback-like arms, forced cadence may override `min_queue_size` but never overrides `min_slices_between_runs`; a due arm still inside cooldown is skipped and reported in verbose output. If multiple available arms are due, the scheduler selects the most overdue arm by overdue ratio, then fewest runs, lowest runtime, and name.
-
-## Reproducibility
-
-- Set `random_seed` in config and/or `--random-seed` on CLI.
-- Scheduler randomness for epsilon exploration is deterministic for a fixed seed.
-- Crack throughput/results can still vary slightly between runs because runtime-limited hashcat execution depends on hardware scheduling, thermal state, driver behavior, and timing.
-
-## Repository structure
-
-```text
-.
-├── adaptive_hashcat_scheduler/
-├── docs/config.md
-├── example_config.json
-├── hashcat_scheduler.py
-├── runs/
-└── README.md
+```sh
+python3 -m pip install -e ".[test]"
 ```
 
-## Example config
+The package installs the `adaptive-hashcat-scheduler` console script. The module entrypoint remains available with `python3 -m adaptive_hashcat_scheduler`.
 
-See the canonical example at `example_config.json`. It is valid JSON and includes every supported arm type and major scheduler/feedback setting. See `docs/config.md` for concise configuration notes. Model-dependent predictive and static-affix arms are disabled by default because this repository does not currently bundle model files; replace the `/path/to/...` placeholders before enabling them.
+## Quick start
 
-## Example command
+`example_config.json` is a reference config. Enabled arms use tiny smoke-test wordlists under `wordlists/`; disabled arms show placeholder paths for experiment-scale inputs.
 
-```bash
-python3 hashcat_scheduler.py \
-  --hashes hashes.txt \
-  --hash-mode 8300 \
+```sh
+python3 -m adaptive_hashcat_scheduler run \
   --config example_config.json \
+  --hashes /path/to/hashes.txt \
+  --hash-mode 8300 \
   --out-dir runs/example \
-  --schedule adaptive \
-  --total-slices 30
+  --total-slices 10
 ```
+
+## Core concepts
+
+- **Arm name**: stable configured instance identifier, using `family/mechanism` form such as `feedback/parent-domain`.
+- **Arm type**: flat implementation selector such as `parent_domain_feedback`.
+- **Slice**: one hashcat execution window. An arm-level `slice_seconds` overrides the CLI value for that arm.
+- **Warm-up**: default `warmup.scoring=arm_local` uses per-arm potfiles for warm-up scoring; adaptive scoring always uses shared marginal discoveries.
+
+## Arm families
+
+| Family | Canonical examples | Types |
+| --- | --- | --- |
+| Wordlist | `wordlist/seclists`, `wordlist/pcfg-100m` | `dictionary` |
+| Brute force | `bruteforce/rfc1035-len2-5` | `brute_force` |
+| Feedback | `feedback/predictive-prefix`, `feedback/parent-domain` | `predictive_prefix`, `predictive_suffix`, `permutation`, `static_affix_feedback`, `parent_domain_feedback` |
+| OSINT | `osint/amass`, `osint/subfinder` | `amass_osint`, `subfinder_osint` |
 
 ## Output files
 
-Each run writes to `--out-dir`:
+The run directory contains `jobs.jsonl`, `run.pot`, per-job hashcat logs, warm-up potfiles when arm-local warm-up is used, feedback state under `feedback/<safe-arm-name>/`, and OSINT state under `osint/<safe-arm-name>/`.
 
-- `run.pot` (run-local potfile; canonical cracked-output store)
-- `hashcat_logs/job_XXXXXX.log` (raw hashcat command output; parsed status JSON objects are included only with `--verbose-debug`)
-- `jobs.jsonl` (per-slice execution metrics)
-- `hits.jsonl` (newly cracked entries)
-- `run_summary.json` (final aggregate summary)
-- `feedback/<arm>/queue.txt`, `feedback/<arm>/generated_candidates.sqlite`, optional `feedback/<arm>/generated_candidates.txt` audit output, `feedback/<arm>/expanded_bases.txt`, `feedback/<arm>/slice_candidates.txt`, and `feedback/<arm>/active_slice.json` when a feedback arm is configured
+Feedback state uses `feedback/<arm>/queue.txt`, `feedback/<arm>/generated_candidates.sqlite`, and `queue.txt`, `slice_candidates.txt`, `active_slice.json`, `expanded_bases.txt`, and optionally `generated_candidates.sqlite` or `generated_candidates.txt` depending on the dedupe backend.
 
-`jobs.jsonl` now includes parsed hashcat status fields (progress/speed/recovery/status/session/runtime estimates) when available, with `null` values when unavailable.
+## Documentation
 
-Use `--verbose` to print extra scheduler details without streaming full live hashcat output. Use `--verbose-debug` only when raw parsed status JSON dumps are needed.
+- `docs/config.md`: configuration reference.
+- `docs/state-and-logs.md`: run directory, `jobs.jsonl`, potfiles, hashcat logs, and resume state.
+- `docs/feedback.md`: feedback lifecycle, dedupe backends, and queue files.
+- `docs/osint.md`: Amass/Subfinder behavior and OSINT completion states.
 
-## Important limitations
+## Testing
 
-- PCFG is handled as a static pre-generated wordlist, not as an online generator.
-- Runtime-limited cracking is not perfectly deterministic.
-- Dictionary cursor advancement uses hashcat status JSON progress scaled by recovered salts; if status progress cannot be parsed, the dictionary cursor is left unchanged. Experimental dictionary chunking is available only when `dictionary_candidate_limit` is set to a positive integer in config; the default is `null`/absent and does not pass `--limit`.
-- Dictionary/brute-force offset advancement can be approximate when hashcat progress fields are incomplete.
-- The scheduler is intentionally minimal and experimental.
-
-## Running the scheduler
-
-The package entry point is now:
-
-```bash
-python3 -m adaptive_hashcat_scheduler run \
-  --hashes /path/to/nsec3_hashcat.txt \
-  --hash-mode 8300 \
-  --config example_config.json \
-  --out-dir runs/adaptive_predictive \
-  --schedule adaptive \
-  --total-slices 150 \
-  --slice-seconds 60 \
-  --verbose
+```sh
+python3 -m pytest -v tests
 ```
 
-The legacy `hashcat_scheduler.py` script remains as a thin wrapper around the package CLI. Dictionary arms still use hashcat JSON progress scaled by `recovered_salts_total` to advance the candidate cursor for NSEC3 mode 8300, and brute-force arms remain explicit mask arms.
+## Safety and scope
 
-## Training directional predictive feedback models
-
-Train both directional adjacent-label models from a hashcat potfile or a plain cracked-name file:
-
-```bash
-python3 -m adaptive_hashcat_scheduler train-predictive-feedback \
-  --input /path/to/training.pot \
-  --input-format auto \
-  --output-prefix-model /path/to/prefix_pairs.tsv \
-  --output-suffix-model /path/to/suffix_pairs.tsv
-```
-
-Potfile parsing uses the final colon-separated field as the cracked DNS value, which is required for NSEC3 hashcat mode 8300 potfiles.
-
-## Prefix model vs suffix model
-
-The two predictive arms intentionally use separate directional models:
-
-- Prefix model: `source/context -> likely left label`. From `child.parent`, it learns `parent -> child` and is used by `predictive_prefix` to generate `predicted.base`.
-- Suffix model: `source/context -> likely right label`. From `child.parent`, it learns `child -> parent` and is used by `predictive_suffix` to generate `base.predicted`.
-
-For `k2._domainkey.example`, the prefix model learns `_domainkey -> k2` and `example -> _domainkey`; the suffix model learns `k2 -> _domainkey` and `_domainkey -> example`.
-
-## Enabling predictive_prefix and predictive_suffix arms
-
-Predictive arms are never injected automatically. Add each arm explicitly to the config. Each arm has independent scheduling state in a per-arm directory, for example `feedback/predictive-prefix/queue.txt`, `feedback/predictive-prefix/generated_candidates.sqlite`, and `feedback/predictive-prefix/expanded_bases.txt`.
-
-See `example_config.json` for a complete example with all supported arm types, including `predictive_prefix` and `predictive_suffix`.
-
-## Candidate generation
-
-After every slice, newly cracked DNS names are normalized and passed to feedback arms. With the recommended initial setting, `base_mode = "full"` and `prediction_source = "leftmost"`, the model predicts from the leftmost label while generated candidates retain the full discovered base.
-
-- `predictive_prefix` generates `prediction + "." + base`.
-- `predictive_suffix` generates `base + "." + prediction`.
-- The optional `feedback` arm remains common-label based and generates both `base.common` and `common.base`.
-
-## Forced cadence
-
-Any arm may set `force_every_slices`. During the adaptive phase, available overdue arms are selected before epsilon-greedy selection. Feedback-like arms can also set `min_slices_between_runs` (default `0`) and `min_queue_size` (default `1`); forced cadence can bypass the queue minimum but not the cooldown. Per-slice logs include `min_slices_between_runs`, `slices_since_last_run`, `min_queue_size`, `queue_size`, and verbose unavailable diagnostics include `availability_reason`. If multiple arms are due, the scheduler chooses the highest overdue ratio, then fewest runs, lowest runtime, and finally name.
-
-## Known limitations
-
-- The predictive model is a simple adjacent-pair model with trigram smoothing.
-- The scheduler is tuned for DNS/NSEC3 hashcat mode 8300.
-- Text-file feedback queues may need SQLite or another transactional store later.
-- Feedback slices are resumable through per-arm `active_slice.json` and `slice_candidates.txt` files.
-- Separate prefix/suffix predictors may produce overlapping candidates; dedupe is per-arm in v1.
+The scheduler launches hashcat and optional OSINT binaries configured by the operator. It does not manage OSINT provider credentials, does not bundle large wordlists or models, and does not auto-migrate old run directories after arm names change. Use a fresh `out_dir` after renaming arms.

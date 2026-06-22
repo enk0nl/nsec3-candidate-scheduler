@@ -7,6 +7,7 @@ from adaptive_hashcat_scheduler.arms.base import Arm, SliceResult
 from adaptive_hashcat_scheduler.hashcat.runner import build_hashcat_command, run_cmd
 from adaptive_hashcat_scheduler.hashcat.status import latest_summary
 from adaptive_hashcat_scheduler.logging_utils import append_jsonl, utc_now
+from adaptive_hashcat_scheduler.naming import safe_name
 from adaptive_hashcat_scheduler.arms.osint_common import parse_osint_domains, extract_relative_osint_candidates
 
 MIN_AMASS_VERSION = (5, 1, 1)
@@ -50,7 +51,7 @@ class AmassOsintArm(Arm):
 
     def _ensure_paths(self, context):
         if self.state_dir is None:
-            self.state_dir = Path(context.out_dir) / 'osint' / self.name
+            self.state_dir = Path(context.out_dir) / 'osint' / safe_name(self.name)
             self.state_dir.mkdir(parents=True, exist_ok=True)
             if self.wordlist_path is None:
                 self.wordlist_path = self.state_dir / 'candidates.txt'
@@ -166,7 +167,6 @@ class AmassOsintArm(Arm):
             include_multi_label=bool(self.config.get('include_multi_label', True)),
             dedupe=bool(self.config.get('dedupe', True)), max_candidates=maxc)
         (self.state_dir / 'candidates.txt').write_text('\n'.join(cands) + ('\n' if cands else ''), encoding='utf-8')
-        (self.state_dir / 'generated_candidates.txt').write_text('\n'.join(cands) + ('\n' if cands else ''), encoding='utf-8')
         self.keyspace = len(cands)
         self.metrics.update({'osint_domains': self.domains_list, 'osint_domains_arg': self.domains_arg,
             'osint_amass_binary': self.amass_binary, 'osint_raw_names_total': len(raw),

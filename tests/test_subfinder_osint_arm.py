@@ -102,7 +102,7 @@ def test_subfinder_osint_respects_max_candidates(tmp_path, monkeypatch):
 
 def test_subfinder_osint_writes_state_under_osint_dir(tmp_path, monkeypatch):
     complete(tmp_path, monkeypatch)
-    for n in ['candidates.txt','raw_names.txt','state.json','subfinder.pid','subfinder.log','subfinder.err','subfinder.status.json','generated_candidates.txt']:
+    for n in ['candidates.txt','raw_names.txt','state.json','subfinder.pid','subfinder.log','subfinder.err','subfinder.status.json']:
         assert (tmp_path/'osint'/'subfinder-osint'/n).exists(); assert not (tmp_path/n).exists()
 
 

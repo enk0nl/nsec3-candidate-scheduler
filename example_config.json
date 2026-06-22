@@ -2,44 +2,35 @@
   "random_seed": 1337,
   "alpha": 0.15,
   "epsilon": 0.1,
-  "warmup": {
-    "scoring": "arm_local"
-  },
-  "hashcat": {
-    "optimized_kernels": true
-  },
+  "warmup": { "scoring": "arm_local" },
+  "hashcat": { "optimized_kernels": true },
   "arms": [
     {
-      "name": "seclists",
+      "name": "wordlist/seclists",
       "type": "dictionary",
       "enabled": true,
-      "source": "placeholder-seclists",
       "wordlist": "wordlists/cleaned_seclists_labels.txt",
-      "count_candidates_at_startup": false
+      "count_candidates_at_startup": false,
+      "slice_seconds": 60
     },
     {
       "name": "wordlist/pcfg-100m",
       "type": "dictionary",
-      "enabled": true,
-      "source": "placeholder-pcfg",
-      "wordlist": "wordlists/rfc1035_pcfg_top8843709.txt",
+      "enabled": false,
+      "wordlist": "/path/to/rfc1035_pcfg_top100000000.txt",
+      "candidate_count": 100000000,
       "count_candidates_at_startup": false,
-      "candidate_count": 100000000
+      "slice_seconds": 300
     },
     {
-      "name": "brute-force-rfc1035-len2-5",
+      "name": "bruteforce/rfc1035-len2-5",
       "type": "brute_force",
       "enabled": true,
       "custom_charset_1": "abcdefghijklmnopqrstuvwxyz0123456789-",
-      "masks": [
-        "?1?1",
-        "?1?1?1",
-        "?1?1?1?1",
-        "?1?1?1?1?1"
-      ]
+      "masks": ["?1?1", "?1?1?1", "?1?1?1?1", "?1?1?1?1?1"]
     },
     {
-      "name": "predictive-prefix",
+      "name": "feedback/predictive-prefix",
       "type": "predictive_prefix",
       "enabled": false,
       "model": "/path/to/prefix_pairs.tsv",
@@ -52,15 +43,16 @@
       "k_neighbors": 30,
       "top_predictions_per_neighbor": 100,
       "max_predictions": 100,
+      "generated_candidates_backend": "none",
       "min_slices_between_runs": 5,
       "min_queue_size": 500,
       "force_every_slices": 10,
       "max_candidates_per_slice": 50000,
-      "debug_expansions": false,
-      "debug_sample_size": 20
+      "retain_completed_slices": false,
+      "feedback_disk_warning_bytes": 104857600
     },
     {
-      "name": "predictive-suffix",
+      "name": "feedback/predictive-suffix",
       "type": "predictive_suffix",
       "enabled": false,
       "model": "/path/to/suffix_pairs.tsv",
@@ -73,68 +65,54 @@
       "k_neighbors": 30,
       "top_predictions_per_neighbor": 100,
       "max_predictions": 100,
+      "generated_candidates_backend": "none",
       "min_slices_between_runs": 5,
       "min_queue_size": 500,
       "force_every_slices": 10,
       "max_candidates_per_slice": 50000,
-      "debug_expansions": false,
-      "debug_sample_size": 20
+      "retain_completed_slices": false,
+      "feedback_disk_warning_bytes": 104857600
     },
     {
-      "name": "permutation",
+      "name": "feedback/permutation-numeric",
       "type": "permutation",
       "enabled": true,
-      "numeric": {
-        "enabled": true,
-        "min_width": 1,
-        "max_width": 4,
-        "generate_full_range": true,
-        "generate_width_variants": true,
-        "generate_local_radius": true,
-        "local_radius": 50,
-        "allow_wider_width_variants": false,
-        "allow_large_numeric_ranges": false
-      },
-      "alpha": {
-        "enabled": true,
-        "charset": "abcdefghijklmnopqrstuvwxyz",
-        "min_width": 1,
-        "max_width": 3,
-        "generate_full_range": true,
-        "generate_width_variants": true,
-        "allow_wider_width_variants": false,
-        "allow_large_alpha_ranges": false,
-        "require_numeric_context": true
-      },
+      "generated_candidates_backend": "sqlite",
+      "retain_generated_candidates_text": false,
+      "numeric": { "enabled": true, "min_width": 1, "max_width": 4, "generate_full_range": true, "generate_width_variants": true, "generate_local_radius": true, "local_radius": 50, "allow_wider_width_variants": false, "allow_large_numeric_ranges": false },
+      "alpha": { "enabled": true, "charset": "abcdefghijklmnopqrstuvwxyz", "min_width": 1, "max_width": 3, "generate_full_range": true, "generate_width_variants": true, "allow_wider_width_variants": false, "allow_large_alpha_ranges": false, "require_numeric_context": true },
       "min_slices_between_runs": 5,
       "min_queue_size": 500,
       "force_every_slices": 10,
       "max_candidates_per_slice": 50000,
-      "debug_expansions": false,
-      "debug_sample_size": 20
+      "retain_completed_slices": false,
+      "feedback_disk_warning_bytes": 104857600
     },
     {
-      "name": "static-affix-top50",
+      "name": "feedback/static-affix-top5000",
       "type": "static_affix_feedback",
       "enabled": false,
-      "prefixes": "/path/to/common_prefixes_top50.txt",
-      "suffixes": "/path/to/common_suffixes_top50.txt",
-      "top_prefixes": 50,
-      "top_suffixes": 50,
+      "prefixes": "/path/to/common_prefixes_top5000.txt",
+      "suffixes": "/path/to/common_suffixes_top5000.txt",
+      "top_prefixes": 5000,
+      "top_suffixes": 5000,
       "generate_prefixes": true,
       "generate_suffixes": true,
       "base_mode": "full",
+      "generated_candidates_backend": "none",
       "min_slices_between_runs": 5,
       "min_queue_size": 500,
       "force_every_slices": 10,
       "max_candidates_per_slice": 50000,
-      "debug_expansions": false,
-      "debug_sample_size": 20
+      "retain_completed_slices": false,
+      "feedback_disk_warning_bytes": 104857600
     },
     {
-      "name": "parent-domain",
+      "name": "feedback/parent-domain",
       "type": "parent_domain_feedback",
       "enabled": true,
+      "generated_candidates_backend": "sqlite",
+      "retain_generated_candidates_text": false,
       "min_parent_labels": 1,
       "max_parents_per_discovery": null,
       "include_single_label_parent": true,
@@ -142,11 +120,11 @@
       "min_queue_size": 500,
       "force_every_slices": 10,
       "max_candidates_per_slice": 50000,
-      "debug_expansions": false,
-      "debug_sample_size": 20
+      "retain_completed_slices": false,
+      "feedback_disk_warning_bytes": 104857600
     },
     {
-      "name": "amass-osint",
+      "name": "osint/amass",
       "type": "amass_osint",
       "enabled": false,
       "amass_binary": "/home/vboxuser/go/bin/amass",
@@ -158,10 +136,11 @@
       "include_multi_label": true,
       "max_candidates": null,
       "dedupe": true,
-      "min_slices_between_runs": 0
+      "min_slices_between_runs": 0,
+      "keep_running_on_exit": false
     },
     {
-      "name": "subfinder-osint",
+      "name": "osint/subfinder",
       "type": "subfinder_osint",
       "enabled": false,
       "subfinder_binary": "/home/vboxuser/go/bin/subfinder",

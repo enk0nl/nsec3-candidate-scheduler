@@ -1,0 +1,20 @@
+[build-system]
+requires = []
+build-backend = "adaptive_build_backend"
+backend-path = ["."]
+
+[project]
+name = "adaptive-hashcat-scheduler"
+version = "0.1.0"
+description = "Adaptive scheduler for hashcat-based NSEC3 candidate validation experiments"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+adaptive-hashcat-scheduler = "adaptive_hashcat_scheduler.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

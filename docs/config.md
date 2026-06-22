@@ -1,241 +1,68 @@
-# Scheduler configuration
-
-The canonical example config lives at the repository root as `example_config.json`. Copy it before editing:
-
-```bash
-cp example_config.json my_config.json
-```
+# Configuration reference
 
-You do not need to enable every arm. Keep only the dictionary, brute-force, predictive, permutation, static-affix, or parent-domain arms that are useful for your run. Existing configs without a `warmup` block still default to `warmup.scoring = "arm_local"`; the other supported warm-up scoring mode is `"shared_marginal"`.
+`load_config()` validates every arm entry, including disabled arms. Name/type/schema errors fail early. File paths and external resources are validated only for enabled arms, so disabled placeholder model arms remain loadable.
 
-Feedback arms are not warm-up eligible, but they observe shared-new discoveries during warm-up and may enqueue candidates. Adaptive scoring always uses shared marginal discoveries, even when warm-up uses arm-local scoring.
+## Top-level fields
 
-Feedback runtime state is written under:
-
-```text
-<out_dir>/feedback/<arm>/
-```
-
-For example, feedback arms use `feedback/<arm>/queue.txt`, `feedback/<arm>/expanded_bases.txt`, `feedback/<arm>/slice_candidates.txt`, `feedback/<arm>/active_slice.json`, and generated-candidate dedupe state. Historically, `generated_candidates.txt` was both the persistent dedupe ledger and an audit file. The default generated-candidate dedupe backend is now SQLite, stored at `feedback/<arm>/generated_candidates.sqlite`, so large feedback arms do not need to load the full generated-candidate ledger into memory. `queue.txt` and `slice_candidates.txt` remain operational state; large `queue.txt` files are still a separate scalability consideration because queue slicing currently reads and rewrites the text queue.
-
-Generated-candidate dedupe settings for feedback arms:
-
-- `generated_candidates_backend`: `"sqlite"` (default), `"text"`, or `"none"`.
-- `retain_generated_candidates_text`: `false` by default. When `true` with the SQLite backend, newly accepted generated candidates are also appended to `generated_candidates.txt` as optional audit/debug output, but SQLite remains the dedupe source of truth.
-- `sqlite_insert_batch_size`: default `10000`.
-- `retain_completed_slices`: default `false`; completed active slice files are cleared rather than retained. Runtime-reached slices keep `slice_candidates.txt` and `active_slice.json` so they can resume.
-- `feedback_disk_warning_bytes`: default `104857600` (100 MiB), used to warn once in normal mode for concrete large-file threshold breaches such as oversized `queue.txt`, `slice_candidates.txt`, or legacy/audit `generated_candidates.txt`.
+| Field | Type | Notes |
+| --- | --- | --- |
+| `random_seed` | integer | RNG seed for adaptive selection. |
+| `alpha` | number | Exponential score update factor. |
+| `epsilon` | number | Adaptive exploration probability. |
+| `warmup.scoring` | `arm_local` or `shared_marginal` | Default is `arm_local`. Adaptive scoring always uses shared marginal discoveries. |
+| `hashcat.optimized_kernels` | boolean | Default enabled unless CLI disables it. |
+| `arms` | array | Arm definitions. |
 
-Backend choices such as `generated_candidates_backend: "none"` and `generated_candidates_backend: "text"` are explicit configuration policy decisions. Normal mode does not print policy warnings for these expected choices. Verbose/debug/config-debug mode prints concise backend policy details, such as whether persistent dedupe is enabled and which backend is configured. Actual disk threshold warnings still print in normal mode because they indicate a concrete runtime state size problem.
+Arm names are stable identifiers and use `family/mechanism` form. Canonical names include `wordlist/seclists`, `wordlist/pcfg-100m`, `bruteforce/rfc1035-len2-5`, `feedback/predictive-prefix`, `feedback/predictive-suffix`, `feedback/permutation-numeric`, `feedback/static-affix-top5000`, `feedback/parent-domain`, `osint/amass`, and `osint/subfinder`.
 
-SQLite is recommended for normal runs. The `text` backend preserves legacy behavior where `generated_candidates.txt` is the primary dedupe ledger, but it can consume significant disk and memory for large feedback arms. The `none` backend disables persistent generated-candidate dedupe and avoids creating `generated_candidates.sqlite` or `generated_candidates.txt` entirely. It is useful for low-duplicate arms such as `predictive_prefix`, `predictive_suffix`, and `static_affix_feedback`, where avoiding generated-ledger disk and I/O cost can be worth the trade-off. With `generated_candidates_backend: "none"`, the same candidate may be regenerated or retested later from another base after it leaves the queue/slice unless it is already cracked; current-batch, queued, active-slice, and already-cracked skips still apply, so backend `none` reduces generated-ledger disk usage without intentionally bloating the immediate queue. `expanded_bases.txt` still prevents repeatedly expanding the same base. Queue dedupe currently loads `queue.txt` for membership checks; very large queues may need a SQLite-backed queue or compact queue membership index later.
+Arm types remain flat: `dictionary`, `brute_force`, `feedback`, `predictive_prefix`, `predictive_suffix`, `permutation`, `static_affix_feedback`, `parent_domain_feedback`, `amass_osint`, and `subfinder_osint`.
 
-Recommended generated-candidate backends by feedback arm:
+## Common arm fields
 
-- `predictive_prefix`: `generated_candidates_backend: "none"`
-- `predictive_suffix`: `generated_candidates_backend: "none"`
-- `static_affix_feedback`: `generated_candidates_backend: "none"`
-- `permutation`: `generated_candidates_backend: "sqlite"`
-- `parent_domain_feedback`: `generated_candidates_backend: "sqlite"`
+| Field | Type | Notes |
+| --- | --- | --- |
+| `name` | string | Required, unique, no `..`, no empty path segment, no leading/trailing whitespace. |
+| `type` | string | Required implementation selector. Unknown disabled types fail validation. |
+| `enabled` | boolean | Disabled arms are schema-validated but not instantiated. |
+| `slice_seconds` | positive integer | Optional per-arm override for CLI `--slice-seconds`. Logged as `requested_slice_seconds`. |
+| `force_every_slices` | positive integer | Optional adaptive cadence override. |
+| `min_slices_between_runs` | non-negative integer | Feedback/OSINT cooldown. |
+| `min_queue_size` | non-negative integer | Feedback queue gate. |
 
-Default SQLite feedback arm example:
+## Dictionary arms
 
-```json
-{
-  "name": "feedback/permutation-numeric",
-  "type": "permutation",
-  "generated_candidates_backend": "sqlite",
-  "retain_generated_candidates_text": false,
-  "retain_completed_slices": false
-}
-```
+`type: "dictionary"` requires `wordlist` when enabled. `candidate_count` may be supplied manually; otherwise the total may be unknown unless `count_candidates_at_startup` is true. Startup counting scans the wordlist, so keep `count_candidates_at_startup` false for large files unless the scan is intentional. `large_wordlist_scan_warning_bytes` controls the scan warning threshold.
 
-SQLite with plaintext audit output:
-
-```json
-{
-  "name": "feedback/permutation-numeric",
-  "type": "permutation",
-  "generated_candidates_backend": "sqlite",
-  "retain_generated_candidates_text": true
-}
-```
+## Brute-force arms
 
-Legacy text dedupe backend:
+`type: "brute_force"` uses hashcat masks and optional custom charsets. It is warm-up eligible and does not use feedback queue state.
 
-```json
-{
-  "name": "feedback/permutation-numeric",
-  "type": "permutation",
-  "generated_candidates_backend": "text"
-}
-```
+## Feedback arms
 
-No persistent generated-candidate dedupe for low-duplicate arms:
+Feedback arms read newly cracked labels and enqueue generated candidates for later hashcat dictionary slices. Types: `feedback`, `predictive_prefix`, `predictive_suffix`, `permutation`, `static_affix_feedback`, `parent_domain_feedback`.
 
-```json
-{
-  "name": "feedback/predictive-prefix",
-  "type": "predictive_prefix",
-  "generated_candidates_backend": "none",
-  "retain_completed_slices": false
-}
-```
+Predictive feedback arms require trained adjacent-label pair models via `model`. static-affix feedback arms require mined prefix/suffix files via `prefixes` and `suffixes`. This repository does not currently include model files under `models/`; predictive and static-affix source files must be supplied by the operator. Model-dependent arms are disabled by default in `example_config.json`; disabled placeholder paths are allowed.
 
-```json
-{
-  "name": "feedback/predictive-suffix",
-  "type": "predictive_suffix",
-  "generated_candidates_backend": "none",
-  "retain_completed_slices": false
-}
-```
+Dedupe backends:
 
-```json
-{
-  "name": "feedback/static-affix-top50",
-  "type": "static_affix_feedback",
-  "generated_candidates_backend": "none",
-  "retain_completed_slices": false
-}
-```
+| Backend | Files | Notes |
+| --- | --- | --- |
+| `sqlite` | `generated_candidates.sqlite` | Default persistent generated-candidate dedupe ledger; uses `INSERT OR IGNORE`. |
+| `text` | `generated_candidates.txt` | Legacy persistent ledger and audit output. Heavy for large runs. |
+| `none` | no generated ledger | Disables persistent historical generated-candidate dedupe. Current batch, `queue.txt`, active slice, and already-cracked dedupe still apply. |
 
+Recommended defaults: `generated_candidates_backend="none"` for `feedback/predictive-prefix`, `feedback/predictive-suffix`, and `feedback/static-affix-top5000`; `sqlite` for `feedback/permutation-numeric` and `feedback/parent-domain`. `retain_generated_candidates_text=false` avoids optional audit text output with SQLite.
 
-## Dictionary and PCFG wordlist arms
+Queue files are text files. `queue.txt` is still loaded and rewritten for slicing and membership checks; this is a known scalability limit.
 
-`type: "dictionary"` arms pass the configured `wordlist` path directly to hashcat. PCFG arms that use pre-generated candidate files are configured the same way as dictionary arms.
+## OSINT arms
 
-At startup, dictionary arms validate only cheap file metadata by default: the wordlist path must exist, be a readable regular file, and have non-zero size. They do **not** count lines, iterate through the wordlist, build a candidate list, deduplicate candidates, or validate every candidate unless candidate counting is explicitly enabled.
+`amass_osint` and `subfinder_osint` start external collection and become dictionary arms after candidates are ready. They are not warm-up eligible. `run_immediately_when_ready` defaults to true; the first run happens at the next adaptive slice, not during warm-up. Completion emits a `jobs.jsonl` event, not a slice.
 
-```json
-{
-  "name": "wordlist/pcfg-100m",
-  "type": "dictionary",
-  "wordlist": "/path/to/rfc1035_pcfg_top100000000.txt",
-  "candidate_count": 100000000,
-  "count_candidates_at_startup": false
-}
-```
+Amass fields include `amass_binary`, `domains`, `start_on_run_start`, `poll_interval_seconds`, `run_immediately_when_ready`, `include_single_label`, `include_multi_label`, `max_candidates`, `dedupe`, and `keep_running_on_exit`. Config parsing does not run an unbounded Amass version check.
 
-`candidate_count` is an optional manual override for the wordlist total. It is useful for very large wordlists when the total is already known: the scheduler can clamp progress and perform existing exhaustion checks without scanning the file at startup. `count_candidates_at_startup: false` keeps startup lazy and does not read the wordlist.
+Subfinder fields include `subfinder_binary`, `domain`, `start_on_run_start`, `poll_interval_seconds`, `run_immediately_when_ready`, `include_single_label`, `include_multi_label`, `max_candidates`, `dedupe`, and `keep_running_on_exit`.
 
-`count_candidates_at_startup` defaults to `false`. When both `candidate_count` is omitted and `count_candidates_at_startup` is `false`, startup treats the total as unknown and progress accounting relies on hashcat status, restore/skip state, and hashcat exit status rather than a precomputed total.
+## Logging
 
-Set `count_candidates_at_startup: true` only if you accept a full sequential scan of the wordlist at scheduler startup. If counting is enabled and the wordlist size is at least `large_wordlist_scan_warning_bytes` (default `1073741824`), the scheduler logs a warning before counting because large wordlists can take a long time to scan.
-
-## Model-dependent feedback arms
-
-This repository does not currently include model files under `models/`. Predictive feedback arms require trained adjacent-label pair models, and static-affix feedback arms require mined prefix/suffix files generated from your own data. The example config documents the available settings but keeps these model-dependent arms disabled by default; replace the `/path/to/...` placeholders before enabling them. Release packages may include real models later.
-
-Use the provided predictive training command to create prefix/suffix pair TSV files from a potfile or cracked-name list. Static affix prefix/suffix files should be mined from your own corpus until packaged release models are available.
-
-## Amass OSINT delayed dictionary arm
-
-`type: "amass_osint"` adds a delayed external-source arm that behaves like a dictionary arm after its OSINT collection has finished. Amass is **not bundled** with this scheduler: install and configure Amass v5.1.1 or newer yourself, including all Amass data-source configuration. The scheduler does not configure Amass data sources.
-
-Minimal disabled-by-default example:
-
-```json
-{
-  "name": "amass-osint",
-  "type": "amass_osint",
-  "enabled": false,
-  "amass_binary": "/home/vboxuser/go/bin/amass",
-  "domains": "example.nl,example.com",
-  "start_on_run_start": true,
-  "poll_interval_seconds": 5,
-  "run_immediately_when_ready": true,
-  "include_single_label": true,
-  "include_multi_label": true,
-  "max_candidates": null,
-  "dedupe": true,
-  "min_slices_between_runs": 0
-}
-```
-
-`domains` is required and may be a single string, a comma-separated string, or a JSON list. The scheduler normalizes it to `domains_list` and a comma-separated `domains_arg`; for example, `"example.nl, example.com"` becomes `domains_arg = "example.nl,example.com"`.
-
-At scheduler startup, each enabled Amass OSINT arm starts exactly one background enum process:
-
-```text
-<amass_binary> enum -d <domains_arg>
-```
-
-For multiple domains, this remains one process and one comma-separated `-d` value, for example:
-
-```text
-/home/vboxuser/go/bin/amass enum -d example.nl,example.com
-```
-
-The launch prints a concise start line such as `[osint] amass-osint started amass enum for example.nl,example.com`.
-
-After that single enum process exits successfully, the scheduler fetches names with exactly one subs command using the same comma-separated domains argument:
-
-```text
-<amass_binary> subs -names -d <domains_arg>
-```
-
-For example:
-
-```text
-/home/vboxuser/go/bin/amass subs -names -d example.nl,example.com
-```
-
-The arm writes state under `<out_dir>/osint/<arm>/`, including `amass.log`, `amass.err`, `amass.pid`, `amass.status.json`, `raw_names.txt`, `candidates.txt`, `generated_candidates.txt`, and `state.json`. It does not write Amass state under `feedback/` and does not create per-domain process files.
-
-Candidate conversion strips the matching configured base-domain suffix from each full name returned by Amass. For overlapping configured domains, the longest matching suffix wins. For example, with `example.nl` and `sub.example.nl`, `a.sub.example.nl` becomes `a`, not `a.sub`. Names equal to a base domain, outside configured domains, or invalid under the scheduler DNS candidate normalizer are rejected. `include_single_label` and `include_multi_label` control whether candidates such as `www` and `dev.api` are emitted. Duplicate relative candidates are deduped by default, including duplicates that came from different base domains.
-
-The Amass OSINT arm is delayed and not warm-up eligible. While Amass is running, it is unavailable and consumes no scheduler slices. If Amass is still running when the slice budget ends, it may never be used in that scheduler run. When candidates are ready, the arm uses `<out_dir>/osint/<arm>/candidates.txt` as a normal hashcat dictionary wordlist with the shared potfile and normal dictionary progress accounting.
-
-When Amass reaches a terminal collection state, it prints exactly one completion line and writes one `osint_completed` event record to `jobs.jsonl`. This event is separate from normal hashcat slice jobs and is not counted as a completed slice. If candidates are found, the line includes `completed status=ready`, raw-name count, candidate count, and the candidate wordlist path; `ready` means the arm will be run once immediately at the next adaptive slice when `run_immediately_when_ready` is enabled. If Amass exits successfully but yields zero usable candidates, the line includes `completed status=exhausted`, `candidates=0`, `reason=no_candidates`, and the raw names path; exhausted OSINT arms are unavailable and will not be scheduled. If the enum or result collection fails, the line includes `completed status=failed`, the exit code, a failure reason, and the stderr path. Completion emission is persisted in `state.json` with `completion_event_emitted` so resumed runs do not duplicate old completion events.
-
-By default, `run_immediately_when_ready: true` sets `first_run_pending` as soon as candidates are written. During the adaptive phase, this makes the arm run at the next possible scheduler slice before forced cadence, epsilon exploration, or highest-score selection. After that first valid execution, normal scoring and cooldown rules apply. Set `run_immediately_when_ready: false` to disable this priority and let normal selection rules choose the arm.
-
-## Subfinder OSINT arm
-
-`type: "subfinder_osint"` adds a delayed external-source arm that behaves like a dictionary arm after Subfinder has finished. Subfinder is **not bundled** with this scheduler: install Subfinder separately and configure providers in Subfinder itself. The scheduler does not configure API keys or provider files.
-
-Example disabled-by-default arm:
-
-```json
-{
-  "name": "subfinder-osint",
-  "type": "subfinder_osint",
-  "enabled": false,
-  "subfinder_binary": "/home/vboxuser/go/bin/subfinder",
-  "domain": "example.nl",
-  "start_on_run_start": true,
-  "poll_interval_seconds": 5,
-  "run_immediately_when_ready": true,
-  "include_single_label": true,
-  "include_multi_label": true,
-  "max_candidates": null,
-  "dedupe": true,
-  "min_slices_between_runs": 0,
-  "keep_running_on_exit": false
-}
-```
-
-`domain` is required and this arm is currently single-domain. At scheduler run start, the arm starts exactly:
-
-```text
-<subfinder_binary> -silent -d <domain>
-```
-
-For example:
-
-```text
-/home/vboxuser/go/bin/subfinder -silent -d example.nl
-```
-
-The launch prints a concise start line such as `[osint] subfinder-osint started subfinder for example.nl`.
-
-Subfinder stdout is captured under `<out_dir>/osint/<arm>/subfinder.log`; stderr, PID, status, raw names, generated candidates, and state are also kept under `<out_dir>/osint/<arm>/`. The arm does not write state under `feedback/` or in the run root.
-
-The scheduler strips the configured base-domain suffix from full names before validation. For `domain: "example.nl"`, `sub.example.nl` becomes `sub`, `sub.sub.example.nl` becomes `sub.sub`, the base domain itself is rejected, and names outside the domain are rejected. The resulting relative candidates are validated with the existing DNS candidate normalizer and written to `candidates.txt` for hashcat.
-
-The Subfinder OSINT arm is delayed and not warm-up eligible. While Subfinder is still running, the arm is unavailable and consumes no scheduler slices. If Subfinder is still running when the slice budget ends, it may never be used in that run and the scheduler may terminate the child process unless `keep_running_on_exit` is true.
-
-When Subfinder reaches a terminal collection state, it prints exactly one completion line and writes one `osint_completed` event record to `jobs.jsonl`. This event is separate from normal hashcat slice jobs and is not counted as a completed slice. If candidates are found, the line includes `completed status=ready`, raw-name count, candidate count, and the candidate wordlist path; `ready` means the arm will be run once immediately at the next adaptive slice when `run_immediately_when_ready` is enabled. If Subfinder exits successfully but yields zero usable candidates, the line includes `completed status=exhausted`, `candidates=0`, `reason=no_candidates`, and the raw names path; exhausted OSINT arms are unavailable and will not be scheduled. If the process fails, the line includes `completed status=failed`, the exit code, a failure reason, and the stderr path. Completion emission is persisted in `state.json` with `completion_event_emitted` so resumed runs do not duplicate old completion events.
-
-Once candidates are ready, the arm runs as a normal hashcat dictionary arm over `<out_dir>/osint/<arm>/candidates.txt`, using the shared potfile, the run hash mode, optimized-kernel setting, and normal dictionary skip/progress accounting. By default, `run_immediately_when_ready: true` marks `first_run_pending` so the arm runs once at the next possible adaptive slice before epsilon or highest-score selection. Set `run_immediately_when_ready: false` to disable that first-run priority.
+Normal output contains slice progress, final summary, OSINT start/completion lines, actual errors, and concrete disk threshold warnings. Arm inventory, backend policy, unavailable-arm details, and queue diagnostics are verbose/debug output.
