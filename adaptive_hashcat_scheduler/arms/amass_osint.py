@@ -6,6 +6,7 @@ from typing import Any
 from adaptive_hashcat_scheduler.arms.base import Arm, SliceResult
 from adaptive_hashcat_scheduler.hashcat.runner import build_hashcat_command, run_cmd
 from adaptive_hashcat_scheduler.hashcat.status import latest_summary
+from adaptive_hashcat_scheduler.logging_utils import append_jsonl, utc_now
 from adaptive_hashcat_scheduler.arms.osint_common import parse_osint_domains, extract_relative_osint_candidates
 
 MIN_AMASS_VERSION = (5, 1, 1)
@@ -44,6 +45,8 @@ class AmassOsintArm(Arm):
         self.wordlist_path: Path | None = None
         self._last_poll = 0.0
         self.metrics: dict[str, Any] = {}
+        self.completion_event_emitted = False
+        self._state_loaded = False
 
     def _ensure_paths(self, context):
         if self.state_dir is None:
@@ -51,16 +54,66 @@ class AmassOsintArm(Arm):
             self.state_dir.mkdir(parents=True, exist_ok=True)
             if self.wordlist_path is None:
                 self.wordlist_path = self.state_dir / 'candidates.txt'
+        if not self._state_loaded:
+            self._load_state()
         return self.state_dir
 
     def _write_state(self):
         if not self.state_dir:
             return
         data = {'state': self.state, 'domains_list': self.domains_list, 'domains_arg': self.domains_arg,
-                'first_run_pending': self.first_run_pending, 'pid': self.process.pid if self.process else None,
+                'first_run_pending': self.first_run_pending, 'completion_event_emitted': self.completion_event_emitted, 'pid': self.process.pid if self.process else None,
                 **self.metrics}
         (self.state_dir / 'state.json').write_text(json.dumps(data, indent=2), encoding='utf-8')
         (self.state_dir / 'amass.status.json').write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def _load_state(self):
+        self._state_loaded = True
+        if not self.state_dir:
+            return
+        path = self.state_dir / 'state.json'
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            return
+        self.completion_event_emitted = bool(data.get('completion_event_emitted', False))
+        if data.get('state') in self.STATES and self.completion_event_emitted:
+            self.state = data['state']
+            self.first_run_pending = bool(data.get('first_run_pending', False))
+            self.metrics.update({k: v for k, v in data.items() if k.startswith('osint_') or k == 'candidates_generated_by_domain'})
+            if self.state in {'exhausted', 'failed'}:
+                self.exhausted = True
+
+    def _emit_osint_completed_event(self, context, *, status: str, exit_code: int | None, reason: str | None,
+                                    raw_names_total: int | None = None, candidates_written: int = 0,
+                                    wordlist: Path | None = None, raw_names: Path | None = None,
+                                    stderr: Path | None = None) -> None:
+        if self.completion_event_emitted:
+            return
+        raw_total = raw_names_total if raw_names_total is not None else self.metrics.get('osint_raw_names_total')
+        written = candidates_written if candidates_written is not None else int(self.metrics.get('osint_candidates_written', 0) or 0)
+        wordlist_s = str(wordlist) if wordlist is not None else None
+        raw_s = str(raw_names) if raw_names is not None else None
+        stderr_s = str(stderr) if stderr is not None else None
+        rejected = max(0, int(raw_total) - int(written)) if isinstance(raw_total, int) else None
+        if status == 'ready':
+            print(f'[osint] {self.name} completed status=ready raw={raw_total} candidates={written} wordlist={wordlist_s}', flush=True)
+        elif status == 'exhausted':
+            extra = f' rejected={rejected}' if rejected else ''
+            print(f'[osint] {self.name} completed status=exhausted raw={raw_total} candidates=0{extra} reason={reason} raw_names={raw_s}', flush=True)
+        else:
+            print(f'[osint] {self.name} completed status=failed exit_code={exit_code} reason={reason} stderr={stderr_s}', flush=True)
+        append_jsonl(os.path.join(context.out_dir, 'jobs.jsonl'), {
+            'timestamp': utc_now(), 'event': 'osint_completed', 'arm': self.name, 'arm_type': self.type,
+            'status': status, 'raw_names_total': raw_total, 'candidates_written': written,
+            'candidates_deduped': self.metrics.get('osint_candidates_deduped') if status == 'ready' else (rejected if status == 'exhausted' else None),
+            'wordlist': wordlist_s, 'raw_names': raw_s, 'stderr': stderr_s,
+            'exit_code': exit_code, 'reason': reason,
+        })
+        self.completion_event_emitted = True
+        self._write_state()
 
     def start(self, context):
         self._ensure_paths(context)
@@ -89,6 +142,8 @@ class AmassOsintArm(Arm):
         if rc != 0:
             self.state = 'failed'; self.exhausted = True; self.first_run_pending = False
             self.metrics.update({'osint_process_failed': True, 'osint_exit_code': rc, 'osint_stderr_path': str(self.state_dir / 'amass.err')})
+            self._emit_osint_completed_event(context, status='failed', exit_code=rc, reason='process_exit_nonzero',
+                                             candidates_written=0, stderr=self.state_dir / 'amass.err')
             self._write_state(); return
         self.state = 'collecting_results'; self.metrics.update({'osint_process_completed': True}); self._write_state()
         self._collect_results(context)
@@ -99,6 +154,9 @@ class AmassOsintArm(Arm):
         if rc != 0:
             self.state = 'failed'; self.exhausted = True; self.first_run_pending = False
             self.metrics.update({'osint_subs_exit_code': rc, 'osint_subs_stderr': err})
+            (self.state_dir / 'amass.err').write_text(err or '', encoding='utf-8')
+            self._emit_osint_completed_event(context, status='failed', exit_code=rc, reason='collect_results_failed',
+                                             candidates_written=0, stderr=self.state_dir / 'amass.err')
             self._write_state(); return
         raw = [line.strip() for line in out.splitlines() if line.strip()]
         (self.state_dir / 'raw_names.txt').write_text('\n'.join(raw) + ('\n' if raw else ''), encoding='utf-8')
@@ -117,9 +175,15 @@ class AmassOsintArm(Arm):
             'osint_result_wordlist': str(self.state_dir / 'candidates.txt'), 'osint_state_dir': str(self.state_dir)})
         if cands:
             self.state = 'ready'; self.exhausted = False; self.first_run_pending = self.run_immediately_when_ready
-            print(f'[osint] {self.name} ready raw={len(raw)} candidates={len(cands)} wordlist={self.state_dir / "candidates.txt"} first_run_pending={str(self.first_run_pending).lower()}', flush=True)
+            self._emit_osint_completed_event(context, status='ready', exit_code=0, reason=None,
+                                             raw_names_total=len(raw), candidates_written=len(cands),
+                                             wordlist=self.state_dir / 'candidates.txt', raw_names=self.state_dir / 'raw_names.txt',
+                                             stderr=self.state_dir / 'amass.err')
         else:
             self.state = 'exhausted'; self.exhausted = True; self.first_run_pending = False
+            self._emit_osint_completed_event(context, status='exhausted', exit_code=0, reason='no_candidates',
+                                             raw_names_total=len(raw), candidates_written=0,
+                                             raw_names=self.state_dir / 'raw_names.txt', stderr=self.state_dir / 'amass.err')
         self._write_state()
 
     def is_available(self, context):
