@@ -185,3 +185,39 @@ def test_run_immediately_when_ready_false_disables_first_run_priority(tmp_path, 
 def test_osint_suffix_stripping_helper_shared_with_amass():
     raw = ['sub.example.nl','sub.sub.example.nl','example.nl','otherexample.nl']
     assert extract_relative_osint_candidates(raw, ['example.nl'])[0] == amass_extract_candidates(raw, ['example.nl'])[0]
+
+
+def _events(tmp_path):
+    path = tmp_path / 'jobs.jsonl'
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+
+
+def test_subfinder_ready_emits_completion_status(tmp_path, monkeypatch, capsys):
+    complete(tmp_path, monkeypatch)
+    out = capsys.readouterr().out
+    events = _events(tmp_path)
+    assert 'completed status=ready' in out
+    assert events[-1]['event'] == 'osint_completed'
+    assert events[-1]['candidates_written'] > 0
+
+
+def test_subfinder_exhausted_emits_completion_status_with_zero_candidates(tmp_path, monkeypatch, capsys):
+    complete(tmp_path, monkeypatch, 'example.nl\n')
+    out = capsys.readouterr().out
+    events = _events(tmp_path)
+    assert 'completed status=exhausted' in out and 'candidates=0' in out and 'reason=no_candidates' in out
+    assert events[-1]['event'] == 'osint_completed' and events[-1]['status'] == 'exhausted'
+    assert events[-1]['candidates_written'] == 0 and events[-1]['reason'] == 'no_candidates'
+    assert 'job_id' not in events[-1]
+
+
+def test_subfinder_failed_emits_completion_status(tmp_path, monkeypatch, capsys):
+    fake_popen(monkeypatch, 2)
+    a = arm(); c = ctx(tmp_path); a.start(c); a.poll(c)
+    out = capsys.readouterr().out
+    events = _events(tmp_path)
+    assert 'completed status=failed' in out and 'exit_code=2' in out and 'stderr=' in out
+    assert events[-1]['event'] == 'osint_completed' and events[-1]['status'] == 'failed'
+    assert events[-1]['exit_code'] == 2

@@ -204,3 +204,66 @@ def test_amass_ready_during_warmup_runs_first_in_adaptive_phase(tmp_path):
 def test_run_immediately_when_ready_false_disables_first_run_priority(tmp_path, monkeypatch):
     a, _ = complete(tmp_path, monkeypatch, run_immediately_when_ready=False)
     assert a.state == 'ready' and not a.first_run_pending
+
+
+def _events(tmp_path):
+    path = tmp_path / 'jobs.jsonl'
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+
+
+def test_amass_ready_emits_completion_status(tmp_path, monkeypatch, capsys):
+    complete(tmp_path, monkeypatch, output='sub.example.nl\nwww.example.nl\n')
+    out = capsys.readouterr().out
+    events = _events(tmp_path)
+    assert 'completed status=ready' in out
+    assert events[-1]['event'] == 'osint_completed'
+    assert events[-1]['candidates_written'] > 0
+
+
+def test_amass_exhausted_emits_completion_status_with_zero_candidates(tmp_path, monkeypatch, capsys):
+    complete(tmp_path, monkeypatch, output='example.nl\n')
+    out = capsys.readouterr().out
+    events = _events(tmp_path)
+    assert 'completed status=exhausted' in out and 'candidates=0' in out and 'reason=no_candidates' in out
+    assert events[-1]['event'] == 'osint_completed' and events[-1]['status'] == 'exhausted'
+    assert events[-1]['candidates_written'] == 0 and events[-1]['reason'] == 'no_candidates'
+    assert 'job_id' not in events[-1]
+
+
+def test_amass_failed_emits_completion_status(tmp_path, monkeypatch, capsys):
+    popen = Mock(); popen.pid = 123; popen.poll.return_value = 2
+    monkeypatch.setattr(subprocess, 'Popen', Mock(return_value=popen))
+    a = arm(tmp_path); c = ctx(tmp_path); a.start(c); a.poll(c)
+    out = capsys.readouterr().out
+    events = _events(tmp_path)
+    assert 'completed status=failed' in out and 'exit_code=2' in out and 'stderr=' in out
+    assert events[-1]['event'] == 'osint_completed' and events[-1]['status'] == 'failed'
+    assert events[-1]['exit_code'] == 2
+
+
+def test_osint_completion_event_emitted_once(tmp_path, monkeypatch, capsys):
+    a, c = complete(tmp_path, monkeypatch)
+    for _ in range(3):
+        a.poll(c)
+    out = capsys.readouterr().out
+    assert out.count('completed status=ready') == 1
+    assert sum(1 for e in _events(tmp_path) if e.get('event') == 'osint_completed') == 1
+
+
+def test_osint_completion_event_persisted_in_state(tmp_path, monkeypatch, capsys):
+    complete(tmp_path, monkeypatch)
+    state = json.loads((tmp_path / 'osint' / 'amass-osint' / 'state.json').read_text(encoding='utf-8'))
+    assert state['completion_event_emitted'] is True
+    capsys.readouterr()
+    a = arm(tmp_path); a.poll(ctx(tmp_path))
+    assert 'completed status=' not in capsys.readouterr().out
+    assert sum(1 for e in _events(tmp_path) if e.get('event') == 'osint_completed') == 1
+
+
+def test_osint_completion_event_not_counted_as_slice(tmp_path, monkeypatch):
+    complete(tmp_path, monkeypatch, output='example.nl\n')
+    event = _events(tmp_path)[-1]
+    assert event['event'] == 'osint_completed'
+    assert 'job_id' not in event and 'reward' not in event and 'score_after' not in event
