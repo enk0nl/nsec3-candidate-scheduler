@@ -156,6 +156,22 @@
       "max_candidates": null,
       "dedupe": true,
       "min_slices_between_runs": 0
+    },
+    {
+      "name": "subfinder-osint",
+      "type": "subfinder_osint",
+      "enabled": false,
+      "subfinder_binary": "/home/vboxuser/go/bin/subfinder",
+      "domain": "example.nl",
+      "start_on_run_start": true,
+      "poll_interval_seconds": 5,
+      "run_immediately_when_ready": true,
+      "include_single_label": true,
+      "include_multi_label": true,
+      "max_candidates": null,
+      "dedupe": true,
+      "min_slices_between_runs": 0,
+      "keep_running_on_exit": false
     }
   ]
 }

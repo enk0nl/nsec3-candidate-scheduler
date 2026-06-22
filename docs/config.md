@@ -81,3 +81,48 @@ Candidate conversion strips the matching configured base-domain suffix from each
 The Amass OSINT arm is delayed and not warm-up eligible. While Amass is running, it is unavailable and consumes no scheduler slices. If Amass is still running when the slice budget ends, it may never be used in that scheduler run. When candidates are ready, the arm uses `<out_dir>/osint/<arm>/candidates.txt` as a normal hashcat dictionary wordlist with the shared potfile and normal dictionary progress accounting.
 
 By default, `run_immediately_when_ready: true` sets `first_run_pending` as soon as candidates are written. During the adaptive phase, this makes the arm run at the next possible scheduler slice before forced cadence, epsilon exploration, or highest-score selection. After that first valid execution, normal scoring and cooldown rules apply. Set `run_immediately_when_ready: false` to disable this priority and let normal selection rules choose the arm.
+
+## Subfinder OSINT arm
+
+`type: "subfinder_osint"` adds a delayed external-source arm that behaves like a dictionary arm after Subfinder has finished. Subfinder is **not bundled** with this scheduler: install Subfinder separately and configure providers in Subfinder itself. The scheduler does not configure API keys or provider files.
+
+Example disabled-by-default arm:
+
+```json
+{
+  "name": "subfinder-osint",
+  "type": "subfinder_osint",
+  "enabled": false,
+  "subfinder_binary": "/home/vboxuser/go/bin/subfinder",
+  "domain": "example.nl",
+  "start_on_run_start": true,
+  "poll_interval_seconds": 5,
+  "run_immediately_when_ready": true,
+  "include_single_label": true,
+  "include_multi_label": true,
+  "max_candidates": null,
+  "dedupe": true,
+  "min_slices_between_runs": 0,
+  "keep_running_on_exit": false
+}
+```
+
+`domain` is required and this arm is currently single-domain. At scheduler run start, the arm starts exactly:
+
+```text
+<subfinder_binary> -silent -d <domain>
+```
+
+For example:
+
+```text
+/home/vboxuser/go/bin/subfinder -silent -d example.nl
+```
+
+Subfinder stdout is captured under `<out_dir>/osint/<arm>/subfinder.log`; stderr, PID, status, raw names, generated candidates, and state are also kept under `<out_dir>/osint/<arm>/`. The arm does not write state under `feedback/` or in the run root.
+
+The scheduler strips the configured base-domain suffix from full names before validation. For `domain: "example.nl"`, `sub.example.nl` becomes `sub`, `sub.sub.example.nl` becomes `sub.sub`, the base domain itself is rejected, and names outside the domain are rejected. The resulting relative candidates are validated with the existing DNS candidate normalizer and written to `candidates.txt` for hashcat.
+
+The Subfinder OSINT arm is delayed and not warm-up eligible. While Subfinder is still running, the arm is unavailable and consumes no scheduler slices. If Subfinder is still running when the slice budget ends, it may never be used in that run and the scheduler may terminate the child process unless `keep_running_on_exit` is true.
+
+Once candidates are ready, the arm runs as a normal hashcat dictionary arm over `<out_dir>/osint/<arm>/candidates.txt`, using the shared potfile, the run hash mode, optimized-kernel setting, and normal dictionary skip/progress accounting. By default, `run_immediately_when_ready: true` marks `first_run_pending` so the arm runs once at the next possible adaptive slice before epsilon or highest-score selection. Set `run_immediately_when_ready: false` to disable that first-run priority.

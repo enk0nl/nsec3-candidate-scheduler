@@ -6,32 +6,18 @@ from typing import Any
 from adaptive_hashcat_scheduler.arms.base import Arm, SliceResult
 from adaptive_hashcat_scheduler.hashcat.runner import build_hashcat_command, run_cmd
 from adaptive_hashcat_scheduler.hashcat.status import latest_summary
-from adaptive_hashcat_scheduler.arms.osint_common import parse_osint_domains, extract_relative_osint_candidates
+from adaptive_hashcat_scheduler.arms.osint_common import extract_relative_osint_candidates
 
-MIN_AMASS_VERSION = (5, 1, 1)
-
-
-def parse_domains(value: Any) -> tuple[list[str], str]:
-    return parse_osint_domains(value)
-
-
-def extract_candidates(raw_names: list[str], domains_list: list[str], *, include_single_label: bool = True,
-                       include_multi_label: bool = True, dedupe: bool = True,
-                       max_candidates: int | None = None) -> tuple[list[str], dict[str, int]]:
-    return extract_relative_osint_candidates(raw_names, domains_list,
-        include_single_label=include_single_label, include_multi_label=include_multi_label,
-        dedupe=dedupe, max_candidates=max_candidates)
-
-
-class AmassOsintArm(Arm):
+class SubfinderOsintArm(Arm):
     STATES = {'not_started', 'running', 'collecting_results', 'ready', 'exhausted', 'failed'}
 
     def __init__(self, name, arm_type, config):
         super().__init__(name, arm_type, config)
         self.warmup_eligible = False
-        self.amass_binary = config.get('amass_binary', 'amass')
-        self.domains_list = list(config['domains_list'])
-        self.domains_arg = config['domains_arg']
+        self.subfinder_binary = config.get('subfinder_binary', 'subfinder')
+        self.domain = config['domain']
+        self.domains_list = [self.domain]
+        self.domains_arg = self.domain
         self.start_on_run_start = bool(config.get('start_on_run_start', True))
         self.poll_interval_seconds = float(config.get('poll_interval_seconds', 5))
         self.run_immediately_when_ready = bool(config.get('run_immediately_when_ready', True))
@@ -60,20 +46,20 @@ class AmassOsintArm(Arm):
                 'first_run_pending': self.first_run_pending, 'pid': self.process.pid if self.process else None,
                 **self.metrics}
         (self.state_dir / 'state.json').write_text(json.dumps(data, indent=2), encoding='utf-8')
-        (self.state_dir / 'amass.status.json').write_text(json.dumps(data, indent=2), encoding='utf-8')
+        (self.state_dir / 'subfinder.status.json').write_text(json.dumps(data, indent=2), encoding='utf-8')
 
     def start(self, context):
         self._ensure_paths(context)
         if self.state != 'not_started' or not self.start_on_run_start:
             return
-        log = open(self.state_dir / 'amass.log', 'w', encoding='utf-8')
-        err = open(self.state_dir / 'amass.err', 'w', encoding='utf-8')
-        cmd = [self.amass_binary, 'enum', '-d', self.domains_arg]
+        log = open(self.state_dir / 'subfinder.log', 'w', encoding='utf-8')
+        err = open(self.state_dir / 'subfinder.err', 'w', encoding='utf-8')
+        cmd = [self.subfinder_binary, '-silent', '-d', self.domain]
         self.process = subprocess.Popen(cmd, stdout=log, stderr=err, start_new_session=True)
-        (self.state_dir / 'amass.pid').write_text(str(self.process.pid), encoding='utf-8')
+        (self.state_dir / 'subfinder.pid').write_text(str(self.process.pid), encoding='utf-8')
         self.state = 'running'; self.metrics.update({'osint_process_started': True})
         self._write_state()
-        print(f'[osint] {self.name} started amass enum for {self.domains_arg}', flush=True)
+        print(f'[osint] {self.name} started subfinder for {self.domain}', flush=True)
 
     def poll(self, context):
         self._ensure_paths(context)
@@ -88,30 +74,25 @@ class AmassOsintArm(Arm):
             self._write_state(); return
         if rc != 0:
             self.state = 'failed'; self.exhausted = True; self.first_run_pending = False
-            self.metrics.update({'osint_process_failed': True, 'osint_exit_code': rc, 'osint_stderr_path': str(self.state_dir / 'amass.err')})
+            self.metrics.update({'osint_process_failed': True, 'osint_exit_code': rc, 'osint_stderr_path': str(self.state_dir / 'subfinder.err')})
             self._write_state(); return
         self.state = 'collecting_results'; self.metrics.update({'osint_process_completed': True}); self._write_state()
         self._collect_results(context)
 
     def _collect_results(self, context):
-        cmd = [self.amass_binary, 'subs', '-names', '-d', self.domains_arg]
-        rc, out, err = run_cmd(cmd)
-        if rc != 0:
-            self.state = 'failed'; self.exhausted = True; self.first_run_pending = False
-            self.metrics.update({'osint_subs_exit_code': rc, 'osint_subs_stderr': err})
-            self._write_state(); return
+        out = (self.state_dir / 'subfinder.log').read_text(encoding='utf-8') if (self.state_dir / 'subfinder.log').exists() else ''
         raw = [line.strip() for line in out.splitlines() if line.strip()]
         (self.state_dir / 'raw_names.txt').write_text('\n'.join(raw) + ('\n' if raw else ''), encoding='utf-8')
         maxc = self.config.get('max_candidates')
-        cands, by_domain = extract_candidates(raw, self.domains_list,
+        cands, by_domain = extract_relative_osint_candidates(raw, self.domains_list,
             include_single_label=bool(self.config.get('include_single_label', True)),
             include_multi_label=bool(self.config.get('include_multi_label', True)),
             dedupe=bool(self.config.get('dedupe', True)), max_candidates=maxc)
         (self.state_dir / 'candidates.txt').write_text('\n'.join(cands) + ('\n' if cands else ''), encoding='utf-8')
         (self.state_dir / 'generated_candidates.txt').write_text('\n'.join(cands) + ('\n' if cands else ''), encoding='utf-8')
         self.keyspace = len(cands)
-        self.metrics.update({'osint_domains': self.domains_list, 'osint_domains_arg': self.domains_arg,
-            'osint_amass_binary': self.amass_binary, 'osint_raw_names_total': len(raw),
+        self.metrics.update({'osint_tool': 'subfinder', 'osint_domain': self.domain,
+            'osint_subfinder_binary': self.subfinder_binary, 'osint_raw_names_total': len(raw),
             'osint_candidates_generated': len(cands), 'osint_candidates_written': len(cands),
             'osint_candidates_deduped': len(cands), 'candidates_generated_by_domain': by_domain,
             'osint_result_wordlist': str(self.state_dir / 'candidates.txt'), 'osint_state_dir': str(self.state_dir)})
@@ -161,10 +142,6 @@ class AmassOsintArm(Arm):
                 except Exception: pass
 
     def logging_fields(self):
-        return {'osint_state': self.state, 'first_run_pending': self.first_run_pending,
+        return {'osint_state': self.state, 'osint_tool': 'subfinder', 'osint_domain': self.domain, 'osint_subfinder_binary': self.subfinder_binary, 'first_run_pending': self.first_run_pending,
                 'run_immediately_when_ready': self.run_immediately_when_ready, **self.metrics}
 
-
-def parse_amass_version(text: str):
-    m = re.search(r'(\d+)\.(\d+)\.(\d+)', text or '')
-    return tuple(map(int, m.groups())) if m else None
