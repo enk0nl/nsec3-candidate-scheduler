@@ -154,6 +154,28 @@ def load_config(path: str) -> dict[str, Any]:
             if int(arm.get('top_predictions_per_neighbor',100))<=0: raise ValueError('top_predictions_per_neighbor > 0 required')
             if arm.get('base_mode','full') not in ['full','leftmost']: raise ValueError('invalid base_mode')
             if arm.get('prediction_source','leftmost') not in ['full','leftmost']: raise ValueError('invalid prediction_source')
+        if t=='dictionary':
+            arm = dict(arm)
+            if not arm.get('wordlist'):
+                raise ValueError('dictionary arm requires wordlist')
+            mp = Path(arm['wordlist'])
+            full = mp if mp.is_absolute() or mp.exists() else base / mp
+            if not full.exists():
+                raise ValueError(f'wordlist path does not exist: {arm["wordlist"]}')
+            arm['wordlist'] = str(full)
+            candidate_count = arm.get('candidate_count')
+            if candidate_count is not None:
+                if not isinstance(candidate_count, int) or isinstance(candidate_count, bool) or candidate_count <= 0:
+                    raise ValueError(f'candidate_count for arm {arm.get("name")!r} must be a positive integer')
+                arm['candidate_count'] = candidate_count
+            count_candidates = arm.get('count_candidates_at_startup', False)
+            if not isinstance(count_candidates, bool):
+                raise ValueError('count_candidates_at_startup must be boolean')
+            arm['count_candidates_at_startup'] = count_candidates
+            warning_bytes = arm.get('large_wordlist_scan_warning_bytes', 1_073_741_824)
+            if not isinstance(warning_bytes, int) or isinstance(warning_bytes, bool) or warning_bytes < 0:
+                raise ValueError('large_wordlist_scan_warning_bytes must be a non-negative integer')
+            arm['large_wordlist_scan_warning_bytes'] = warning_bytes
         if t=='permutation':
             _validate_permutation(arm)
         if t=='amass_osint':

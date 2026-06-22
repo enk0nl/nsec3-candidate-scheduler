@@ -14,14 +14,17 @@
       "type": "dictionary",
       "enabled": true,
       "source": "placeholder-seclists",
-      "wordlist": "wordlists/cleaned_seclists_labels.txt"
+      "wordlist": "wordlists/cleaned_seclists_labels.txt",
+      "count_candidates_at_startup": false
     },
     {
-      "name": "pcfg",
+      "name": "wordlist/pcfg-100m",
       "type": "dictionary",
       "enabled": true,
       "source": "placeholder-pcfg",
-      "wordlist": "wordlists/rfc1035_pcfg_top8843709.txt"
+      "wordlist": "wordlists/rfc1035_pcfg_top8843709.txt",
+      "count_candidates_at_startup": false,
+      "candidate_count": 100000000
     },
     {
       "name": "brute-force-rfc1035-len2-5",
