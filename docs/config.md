@@ -18,6 +18,26 @@ Feedback runtime state is written under:
 
 For example, feedback arms use `feedback/<arm>/queue.txt` and `feedback/<arm>/generated_candidates.txt`. The `generated_candidates.txt` file is a generated-candidate dedupe ledger; it is not tested, cracked, or validated history.
 
+
+## Dictionary and PCFG wordlist arms
+
+`type: "dictionary"` arms pass the configured `wordlist` path directly to hashcat. PCFG arms that use pre-generated candidate files are configured the same way as dictionary arms.
+
+At startup, dictionary arms validate only cheap file metadata by default: the wordlist path must exist, be a readable regular file, and have non-zero size. They do **not** count lines, iterate through the wordlist, build a candidate list, deduplicate candidates, or validate every candidate unless candidate counting is explicitly enabled.
+
+```json
+{
+  "name": "pcfg",
+  "type": "dictionary",
+  "wordlist": "wordlists/rfc1035_pcfg_top8843709.txt",
+  "count_candidates_at_startup": false
+}
+```
+
+`count_candidates_at_startup` defaults to `false`. When it is `false`, startup logs report `candidate_count=unknown`, and progress accounting relies on hashcat status, restore/skip state, and hashcat exit status rather than a precomputed total.
+
+Set `count_candidates_at_startup: true` only if you accept a full sequential scan of the wordlist at scheduler startup. If counting is enabled and the wordlist size is at least `large_wordlist_scan_warning_bytes` (default `1073741824`), the scheduler logs a warning before counting because large wordlists can take a long time to scan.
+
 ## Model-dependent feedback arms
 
 This repository does not currently include model files under `models/`. Predictive feedback arms require trained adjacent-label pair models, and static-affix feedback arms require mined prefix/suffix files generated from your own data. The example config documents the available settings but keeps these model-dependent arms disabled by default; replace the `/path/to/...` placeholders before enabling them. Release packages may include real models later.
