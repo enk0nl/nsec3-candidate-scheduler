@@ -294,6 +294,7 @@ def run_scheduler(args) -> int:
     if getattr(args, 'no_optimized_kernels', False):
         optimized_kernels = False
     ctx=SchedulerContext(args.hashes,args.hash_mode,args.out_dir,args.slice_seconds,potfile,getattr(args,'hashcat_bin','hashcat'),getattr(args,'default_limit',1000000),optimized_kernels)
+    ctx.verbose_osint = bool(getattr(args, 'verbose', False))
     choose_arm.context=ctx
     for _arm in arms:
         starter=getattr(_arm, 'start', None)

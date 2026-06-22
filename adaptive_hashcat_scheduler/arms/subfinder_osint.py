@@ -37,6 +37,9 @@ class SubfinderOsintArm(Arm):
         self.keep_running_on_exit = bool(config.get('keep_running_on_exit', False))
         self.state = 'not_started'
         self.process: subprocess.Popen | None = None
+        self._stdout_handle = None
+        self._stderr_handle = None
+        self._started_at: float | None = None
         self.first_run_pending = False
         self.keyspace: int | None = None
         self.state_dir: Path | None = None
@@ -66,14 +69,19 @@ class SubfinderOsintArm(Arm):
         self._ensure_paths(context)
         if self.state != 'not_started' or not self.start_on_run_start:
             return
-        log = open(self.state_dir / 'subfinder.log', 'w', encoding='utf-8')
-        err = open(self.state_dir / 'subfinder.err', 'w', encoding='utf-8')
+        self._stdout_handle = open(self.state_dir / 'subfinder.log', 'w', encoding='utf-8')
+        self._stderr_handle = open(self.state_dir / 'subfinder.err', 'w', encoding='utf-8')
         cmd = [self.subfinder_binary, '-silent', '-d', self.domain]
-        self.process = subprocess.Popen(cmd, stdout=log, stderr=err, start_new_session=True)
+        cmd_display = ' '.join(cmd)
+        print(f'[osint] {self.name} starting cmd={cmd_display}', flush=True)
+        self.process = subprocess.Popen(cmd, stdout=self._stdout_handle, stderr=self._stderr_handle,
+                                        text=True, start_new_session=True)
+        self._started_at = time.time()
         (self.state_dir / 'subfinder.pid').write_text(str(self.process.pid), encoding='utf-8')
         self.state = 'running'; self.metrics.update({'osint_process_started': True, 'osint_state_dir': str(self.state_dir)})
         self._write_state()
-        print(f'[osint] {self.name} started subfinder for {self.domain}', flush=True)
+        print(f'[osint] {self.name} started pid={self.process.pid}', flush=True)
+        print(f'[osint] {self.name} state=running', flush=True)
 
     def poll(self, context):
         self._ensure_paths(context)
@@ -85,7 +93,11 @@ class SubfinderOsintArm(Arm):
             self.metrics.update({'osint_process_running': True})
             if now - self._last_poll >= self.poll_interval_seconds:
                 self._last_poll = now
+                if getattr(context, 'verbose_osint', False):
+                    elapsed = int(now - self._started_at) if self._started_at else 0
+                    print(f'[osint] {self.name} still running elapsed={elapsed}s', flush=True)
             self._write_state(); return
+        self._close_process_logs()
         if rc != 0:
             self.state = 'failed'; self.exhausted = True; self.first_run_pending = False
             self.metrics.update({'osint_process_failed': True, 'osint_exit_code': rc, 'osint_stderr_path': str(self.state_dir / 'subfinder.err')})
@@ -146,6 +158,16 @@ class SubfinderOsintArm(Arm):
                            progress_source=src, dictionary_candidate_cursor=cursor, exhausted=self.exhausted,
                            valid_work=valid, extra=self.logging_fields())
 
+    def _close_process_logs(self):
+        for handle_name in ('_stdout_handle', '_stderr_handle'):
+            handle = getattr(self, handle_name, None)
+            if handle is not None:
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+                setattr(self, handle_name, None)
+
     def cleanup(self):
         if self.keep_running_on_exit:
             return
@@ -155,6 +177,8 @@ class SubfinderOsintArm(Arm):
             except Exception:
                 try: os.killpg(self.process.pid, signal.SIGTERM)
                 except Exception: pass
+        if not self.keep_running_on_exit:
+            self._close_process_logs()
 
     def logging_fields(self):
         return {'osint_state': self.state, 'first_run_pending': self.first_run_pending,

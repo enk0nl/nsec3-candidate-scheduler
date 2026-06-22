@@ -179,3 +179,67 @@ def test_run_immediately_when_ready_false_disables_first_run_priority(tmp_path, 
 def test_osint_suffix_stripping_helper_shared_with_amass():
     raw=['sub.example.nl','sub.sub.example.nl']
     assert amass_extract(raw, ['example.nl'])[0] == extract_candidates(raw, ['example.nl'])[0]
+
+
+def test_subfinder_start_returns_immediately(tmp_path, monkeypatch):
+    popen=Mock(); popen.pid=123; popen.poll.return_value=None
+    popen.wait=Mock(); popen.communicate=Mock()
+    mp=Mock(return_value=popen); monkeypatch.setattr(subprocess, 'Popen', mp)
+    a=arm(); a.start(ctx(tmp_path))
+    mp.assert_called_once()
+    popen.wait.assert_not_called()
+    popen.communicate.assert_not_called()
+    assert a.state == 'running'
+    assert not (tmp_path/'osint'/'subfinder-osint'/'raw_names.txt').exists()
+
+
+def test_subfinder_uses_file_stdout_not_pipe(tmp_path, monkeypatch):
+    popen=Mock(); popen.pid=123; popen.poll.return_value=None
+    mp=Mock(return_value=popen); monkeypatch.setattr(subprocess, 'Popen', mp)
+    a=arm(); a.start(ctx(tmp_path))
+    kwargs = mp.call_args.kwargs
+    assert kwargs['stdout'] is not subprocess.PIPE
+    assert kwargs['stderr'] is not subprocess.PIPE
+    assert kwargs['text'] is True
+    assert kwargs['start_new_session'] is True
+
+
+def test_subfinder_poll_running_does_not_consume_slice(tmp_path, monkeypatch):
+    import argparse
+    from adaptive_hashcat_scheduler.scheduler import run_scheduler
+    popen=Mock(); popen.pid=123; popen.poll.return_value=None
+    monkeypatch.setattr(subprocess, 'Popen', Mock(return_value=popen))
+    run_hashcat=Mock(return_value=(4,'',''))
+    monkeypatch.setattr('adaptive_hashcat_scheduler.arms.subfinder_osint.run_cmd', run_hashcat)
+    config=tmp_path/'config.json'
+    config.write_text(json.dumps({'arms':[{'name':'subfinder-osint','type':'subfinder_osint','domain':'example.nl','subfinder_binary':'subfinder'}]}))
+    hashes=tmp_path/'hashes.txt'; hashes.write_text('hash\n')
+    out=tmp_path/'out'
+    rc=run_scheduler(argparse.Namespace(hashes=str(hashes), hash_mode=0, config=str(config), out_dir=str(out),
+                                        schedule='adaptive', total_slices=1, slice_seconds=1, alpha=None,
+                                        epsilon=None, random_seed=0, default_limit=1000000,
+                                        hashcat_bin='hashcat', quiet=True, verbose=False,
+                                        no_optimized_kernels=True))
+    assert rc == 0
+    run_hashcat.assert_not_called()
+    assert (out/'jobs.jsonl').read_text() == ''
+
+
+def test_subfinder_collects_results_after_exit(tmp_path, monkeypatch):
+    a,c=complete(tmp_path, monkeypatch, output='sub.example.nl\nsub.sub.example.nl\n', rc=0)
+    assert (tmp_path/'osint'/'subfinder-osint'/'raw_names.txt').read_text().splitlines()==['sub.example.nl','sub.sub.example.nl']
+    assert (tmp_path/'osint'/'subfinder-osint'/'candidates.txt').read_text().splitlines()==['sub','sub.sub']
+    assert a.state == 'ready' and a.first_run_pending
+
+
+def test_subfinder_failed_exit_marks_failed(tmp_path, monkeypatch):
+    a,c=complete(tmp_path, monkeypatch, rc=9)
+    assert a.state == 'failed'
+    assert a.is_available(c) is False
+    assert a.first_run_pending is False
+
+
+def test_subfinder_has_no_version_check_during_config_load(tmp_path, monkeypatch):
+    run=Mock(); monkeypatch.setattr(subprocess, 'run', run)
+    load_config(cfgfile(tmp_path, {'name':'s','type':'subfinder_osint','domain':'example.nl'}))
+    run.assert_not_called()
