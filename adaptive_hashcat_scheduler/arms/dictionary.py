@@ -25,9 +25,15 @@ class DictionaryArm(Arm):
         self.large_wordlist_scan_warning_bytes = int(
             config.get('large_wordlist_scan_warning_bytes', LARGE_WORDLIST_SCAN_WARNING_BYTES)
         )
+        configured_count = config.get('candidate_count')
         self.candidate_count: int | None = None
         self.total_candidates: int | None = None
-        if self.count_candidates_at_startup:
+        self.candidate_count_source = 'unknown'
+        if configured_count is not None:
+            self.candidate_count = int(configured_count)
+            self.total_candidates = self.candidate_count
+            self.candidate_count_source = 'config'
+        elif self.count_candidates_at_startup:
             if self.wordlist_size >= self.large_wordlist_scan_warning_bytes:
                 logging.warning(
                     'Counting candidates for large wordlist may take a long time: %s size=%s',
@@ -36,14 +42,20 @@ class DictionaryArm(Arm):
                 )
             self.candidate_count = count_lines(self.wordlist_path)
             self.total_candidates = self.candidate_count
+            self.candidate_count_source = 'counted'
         self.keyspace = self.candidate_count
-        candidate_count_log = self.candidate_count if self.candidate_count is not None else 'unknown'
-        print(
-            f'[arm] name={self.name} type={self.type} wordlist={self.wordlist_path} '
-            f'size={self.wordlist_size} candidate_count={candidate_count_log} '
-            f'count_candidates_at_startup={str(self.count_candidates_at_startup).lower()}',
-            flush=True,
-        )
+        if self._should_log_startup_metadata():
+            candidate_count_log = self.candidate_count if self.candidate_count is not None else 'unknown'
+            print(
+                f'[arm] name={self.name} type={self.type} wordlist={self.wordlist_path} '
+                f'size={self.wordlist_size} candidate_count={candidate_count_log} '
+                f'candidate_count_source={self.candidate_count_source} '
+                f'count_candidates_at_startup={str(self.count_candidates_at_startup).lower()}',
+                flush=True,
+            )
+
+    def _should_log_startup_metadata(self) -> bool:
+        return any(bool(self.config.get(key, False)) for key in ('verbose', 'debug', 'debug_startup', 'debug_arms'))
 
     @staticmethod
     def _validate_wordlist_metadata(path: Path) -> int:

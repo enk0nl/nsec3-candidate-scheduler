@@ -27,14 +27,17 @@ At startup, dictionary arms validate only cheap file metadata by default: the wo
 
 ```json
 {
-  "name": "pcfg",
+  "name": "wordlist/pcfg-100m",
   "type": "dictionary",
-  "wordlist": "wordlists/rfc1035_pcfg_top8843709.txt",
+  "wordlist": "/path/to/rfc1035_pcfg_top100000000.txt",
+  "candidate_count": 100000000,
   "count_candidates_at_startup": false
 }
 ```
 
-`count_candidates_at_startup` defaults to `false`. When it is `false`, startup logs report `candidate_count=unknown`, and progress accounting relies on hashcat status, restore/skip state, and hashcat exit status rather than a precomputed total.
+`candidate_count` is an optional manual override for the wordlist total. It is useful for very large wordlists when the total is already known: the scheduler can clamp progress and perform existing exhaustion checks without scanning the file at startup. `count_candidates_at_startup: false` keeps startup lazy and does not read the wordlist.
+
+`count_candidates_at_startup` defaults to `false`. When both `candidate_count` is omitted and `count_candidates_at_startup` is `false`, startup treats the total as unknown and progress accounting relies on hashcat status, restore/skip state, and hashcat exit status rather than a precomputed total.
 
 Set `count_candidates_at_startup: true` only if you accept a full sequential scan of the wordlist at scheduler startup. If counting is enabled and the wordlist size is at least `large_wordlist_scan_warning_bytes` (default `1073741824`), the scheduler logs a warning before counting because large wordlists can take a long time to scan.
 

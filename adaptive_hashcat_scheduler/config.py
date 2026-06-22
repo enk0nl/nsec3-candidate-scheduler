@@ -163,6 +163,11 @@ def load_config(path: str) -> dict[str, Any]:
             if not full.exists():
                 raise ValueError(f'wordlist path does not exist: {arm["wordlist"]}')
             arm['wordlist'] = str(full)
+            candidate_count = arm.get('candidate_count')
+            if candidate_count is not None:
+                if not isinstance(candidate_count, int) or isinstance(candidate_count, bool) or candidate_count <= 0:
+                    raise ValueError(f'candidate_count for arm {arm.get("name")!r} must be a positive integer')
+                arm['candidate_count'] = candidate_count
             count_candidates = arm.get('count_candidates_at_startup', False)
             if not isinstance(count_candidates, bool):
                 raise ValueError('count_candidates_at_startup must be boolean')

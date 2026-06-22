@@ -287,7 +287,14 @@ def run_scheduler(args) -> int:
     potfile=os.path.join(args.out_dir,'run.pot'); open(potfile,'a').close()
     jobs_path=os.path.join(args.out_dir,'jobs.jsonl'); open(jobs_path,'w').close()
     cfg=load_config(args.config)
-    arms=[make_arm(a) for a in cfg['arms']]
+    startup_debug_flags = {
+        'verbose': getattr(args, 'verbose', False) or bool(cfg.get('verbose', False)),
+        'debug': bool(cfg.get('debug', False)),
+        'debug_startup': bool(cfg.get('debug_startup', False)),
+        'debug_arms': bool(cfg.get('debug_arms', False)),
+    }
+    arm_configs = [{**a, **{k: v for k, v in startup_debug_flags.items() if v}} for a in cfg['arms']]
+    arms=[make_arm(a) for a in arm_configs]
     if not arms: raise ValueError('config has no enabled arms')
     cfg_warmup = cfg.get('warmup') or {}
     warmup_scoring = cfg_warmup.get('scoring', 'arm_local')
