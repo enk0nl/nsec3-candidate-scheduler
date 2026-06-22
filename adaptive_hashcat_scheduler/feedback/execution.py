@@ -102,7 +102,7 @@ def run_feedback_dictionary_slice(arm, context, extra: dict[str, Any] | None = N
                        progress_source=progress_source, dictionary_candidate_cursor=next_skip,
                        exhausted=arm.exhausted, executed=True, valid_work=valid_work, execution_status=('executed' if valid_work else 'failed_no_progress'), extra={
         'feedback_state_dir': str(q.root),
-        'generated_candidates_count': len(q.load_generated_candidates()),
+        'generated_candidates_count': q.generated_candidates_count(),
         'active_slice': q.load_active_slice().get('active', False),
         'active_slice_file': active.get('slice_file'),
         'active_slice_total_candidates': total,

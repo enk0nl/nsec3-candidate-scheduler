@@ -68,7 +68,8 @@ def test_example_config_uses_new_feedback_state_layout():
     assert 'parent-domain_queue.txt' not in docs
     assert 'parent-domain_seen_candidates.txt' not in docs
     assert 'feedback/<arm>/queue.txt' in docs
-    assert 'feedback/<arm>/generated_candidates.txt' in docs
+    assert 'feedback/<arm>/generated_candidates.sqlite' in docs
+    assert 'generated_candidates_backend' in docs
 
 
 def test_readme_references_existing_example_config():

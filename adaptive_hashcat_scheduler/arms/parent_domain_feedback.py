@@ -20,7 +20,7 @@ class ParentDomainFeedbackArm(Arm):
 
     def _queue(self, context) -> FeedbackQueueState:
         if self.queue_state is None or str(self.queue_state.out_dir) != context.out_dir:
-            self.queue_state = FeedbackQueueState(context.out_dir, self.name)
+            self.queue_state = FeedbackQueueState(context.out_dir, self.name, self.config)
         return self.queue_state
 
     def _empty_metrics(self) -> dict[str, int]:
@@ -74,14 +74,19 @@ class ParentDomainFeedbackArm(Arm):
 
     def on_new_discoveries(self, discoveries, context) -> dict[str, Any]:
         q = self._queue(context)
-        generated = q.load_generated_candidates()
-        queued = set(q.load_queue())
+        queued = q.load_queue_candidates_set()
+        active = q.load_active_slice_candidates_set()
         expanded = q.load_expanded_bases()
+        expansion_seen: set[str] = set()
         cracked = {normalize_dns_name(value) for _, value in iter_potfile_cracks(context.potfile)}
         cracked.discard(None)
         to_enqueue: list[str] = []
         bases: list[str] = []
         metrics: dict[str, Any] = self._empty_metrics()
+        metrics['candidates_skipped_batch_duplicate'] = 0
+        metrics['candidates_skipped_queue_duplicate'] = 0
+        metrics['candidates_skipped_active_slice_duplicate'] = 0
+        metrics['candidates_skipped_already_cracked'] = 0
         debug_enabled = bool(self.config.get('debug_expansions', False))
         debug_sample_size = max(0, int(self.config.get('debug_sample_size', 20)))
         parent_samples: list[str] = []
@@ -119,19 +124,26 @@ class ParentDomainFeedbackArm(Arm):
                 if cand in cracked:
                     metrics['parent_duplicates_already_cracked'] += 1
                     metrics['parent_duplicates_skipped'] += 1
+                    metrics['candidates_skipped_already_cracked'] += 1
                     record['skipped_already_cracked'].append(cand)
                     continue
                 if cand in queued:
                     metrics['parent_duplicates_queued'] += 1
                     metrics['parent_duplicates_skipped'] += 1
+                    metrics['candidates_skipped_queue_duplicate'] += 1
                     record['skipped_queued'].append(cand)
                     continue
-                if cand in generated:
-                    metrics['parent_duplicates_generated'] += 1
+                if cand in active:
                     metrics['parent_duplicates_skipped'] += 1
+                    metrics['candidates_skipped_active_slice_duplicate'] += 1
+                    record['skipped_queued'].append(cand)
+                    continue
+                if cand in expansion_seen:
+                    metrics['parent_duplicates_skipped'] += 1
+                    metrics['candidates_skipped_batch_duplicate'] += 1
                     record['skipped_generated'].append(cand)
                     continue
-                generated.add(cand)
+                expansion_seen.add(cand)
                 queued.add(cand)
                 to_enqueue.append(cand)
                 record['enqueued'].append(cand)
@@ -141,7 +153,18 @@ class ParentDomainFeedbackArm(Arm):
             if debug_enabled and len(debug_records) < debug_sample_size:
                 debug_records.append(record)
 
-        metrics['parent_candidates_enqueued'] = q.append_candidates(to_enqueue)
+        enq_stats = q.enqueue_generated_candidates(to_enqueue)
+        metrics['parent_candidates_enqueued'] = enq_stats['candidates_enqueued']
+        metrics['parent_duplicates_generated'] += enq_stats['candidates_skipped_generated_duplicate']
+        metrics['parent_duplicates_skipped'] += enq_stats['candidates_skipped_generated_duplicate']
+        metrics['generated_candidates_backend'] = enq_stats['generated_candidates_backend']
+        metrics['persistent_generated_dedupe'] = enq_stats['persistent_generated_dedupe']
+        metrics['candidates_skipped_generated_duplicate'] = enq_stats['candidates_skipped_generated_duplicate']
+        metrics['candidates_skipped_batch_duplicate'] += enq_stats['candidates_skipped_batch_duplicate']
+        metrics['candidates_skipped_queue_duplicate'] += enq_stats['candidates_skipped_queue_duplicate']
+        metrics['candidates_skipped_active_slice_duplicate'] += enq_stats['candidates_skipped_active_slice_duplicate']
+        metrics['candidates_skipped_already_cracked'] += enq_stats['candidates_skipped_already_cracked']
+        metrics['candidates_enqueued_total'] = enq_stats['candidates_enqueued_total']
         if debug_sample_size > 0:
             metrics['parent_generated_samples'] = parent_samples
         if debug_enabled:

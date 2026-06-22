@@ -16,7 +16,89 @@ Feedback runtime state is written under:
 <out_dir>/feedback/<arm>/
 ```
 
-For example, feedback arms use `feedback/<arm>/queue.txt` and `feedback/<arm>/generated_candidates.txt`. The `generated_candidates.txt` file is a generated-candidate dedupe ledger; it is not tested, cracked, or validated history.
+For example, feedback arms use `feedback/<arm>/queue.txt`, `feedback/<arm>/expanded_bases.txt`, `feedback/<arm>/slice_candidates.txt`, `feedback/<arm>/active_slice.json`, and generated-candidate dedupe state. Historically, `generated_candidates.txt` was both the persistent dedupe ledger and an audit file. The default generated-candidate dedupe backend is now SQLite, stored at `feedback/<arm>/generated_candidates.sqlite`, so large feedback arms do not need to load the full generated-candidate ledger into memory. `queue.txt` and `slice_candidates.txt` remain operational state; large `queue.txt` files are still a separate scalability consideration because queue slicing currently reads and rewrites the text queue.
+
+Generated-candidate dedupe settings for feedback arms:
+
+- `generated_candidates_backend`: `"sqlite"` (default), `"text"`, or `"none"`.
+- `retain_generated_candidates_text`: `false` by default. When `true` with the SQLite backend, newly accepted generated candidates are also appended to `generated_candidates.txt` as optional audit/debug output, but SQLite remains the dedupe source of truth.
+- `sqlite_insert_batch_size`: default `10000`.
+- `retain_completed_slices`: default `false`; completed active slice files are cleared rather than retained. Runtime-reached slices keep `slice_candidates.txt` and `active_slice.json` so they can resume.
+- `feedback_disk_warning_bytes`: default `104857600` (100 MiB), used to warn once in normal mode for concrete large-file threshold breaches such as oversized `queue.txt`, `slice_candidates.txt`, or legacy/audit `generated_candidates.txt`.
+
+Backend choices such as `generated_candidates_backend: "none"` and `generated_candidates_backend: "text"` are explicit configuration policy decisions. Normal mode does not print policy warnings for these expected choices. Verbose/debug/config-debug mode prints concise backend policy details, such as whether persistent dedupe is enabled and which backend is configured. Actual disk threshold warnings still print in normal mode because they indicate a concrete runtime state size problem.
+
+SQLite is recommended for normal runs. The `text` backend preserves legacy behavior where `generated_candidates.txt` is the primary dedupe ledger, but it can consume significant disk and memory for large feedback arms. The `none` backend disables persistent generated-candidate dedupe and avoids creating `generated_candidates.sqlite` or `generated_candidates.txt` entirely. It is useful for low-duplicate arms such as `predictive_prefix`, `predictive_suffix`, and `static_affix_feedback`, where avoiding generated-ledger disk and I/O cost can be worth the trade-off. With `generated_candidates_backend: "none"`, the same candidate may be regenerated or retested later from another base after it leaves the queue/slice unless it is already cracked; current-batch, queued, active-slice, and already-cracked skips still apply, so backend `none` reduces generated-ledger disk usage without intentionally bloating the immediate queue. `expanded_bases.txt` still prevents repeatedly expanding the same base. Queue dedupe currently loads `queue.txt` for membership checks; very large queues may need a SQLite-backed queue or compact queue membership index later.
+
+Recommended generated-candidate backends by feedback arm:
+
+- `predictive_prefix`: `generated_candidates_backend: "none"`
+- `predictive_suffix`: `generated_candidates_backend: "none"`
+- `static_affix_feedback`: `generated_candidates_backend: "none"`
+- `permutation`: `generated_candidates_backend: "sqlite"`
+- `parent_domain_feedback`: `generated_candidates_backend: "sqlite"`
+
+Default SQLite feedback arm example:
+
+```json
+{
+  "name": "feedback/permutation-numeric",
+  "type": "permutation",
+  "generated_candidates_backend": "sqlite",
+  "retain_generated_candidates_text": false,
+  "retain_completed_slices": false
+}
+```
+
+SQLite with plaintext audit output:
+
+```json
+{
+  "name": "feedback/permutation-numeric",
+  "type": "permutation",
+  "generated_candidates_backend": "sqlite",
+  "retain_generated_candidates_text": true
+}
+```
+
+Legacy text dedupe backend:
+
+```json
+{
+  "name": "feedback/permutation-numeric",
+  "type": "permutation",
+  "generated_candidates_backend": "text"
+}
+```
+
+No persistent generated-candidate dedupe for low-duplicate arms:
+
+```json
+{
+  "name": "feedback/predictive-prefix",
+  "type": "predictive_prefix",
+  "generated_candidates_backend": "none",
+  "retain_completed_slices": false
+}
+```
+
+```json
+{
+  "name": "feedback/predictive-suffix",
+  "type": "predictive_suffix",
+  "generated_candidates_backend": "none",
+  "retain_completed_slices": false
+}
+```
+
+```json
+{
+  "name": "feedback/static-affix-top50",
+  "type": "static_affix_feedback",
+  "generated_candidates_backend": "none",
+  "retain_completed_slices": false
+}
+```
 
 
 ## Dictionary and PCFG wordlist arms

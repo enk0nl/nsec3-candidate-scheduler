@@ -42,3 +42,39 @@ def test_predictive_feedback_state_under_feedback_dir(tmp_path, make_context, wr
     assert (tmp_path / 'feedback' / 'predictive-suffix').is_dir()
     assert_no_root_feedback_files(tmp_path, 'predictive-prefix')
     assert_no_root_feedback_files(tmp_path, 'predictive-suffix')
+
+
+def test_predictive_prefix_can_use_backend_none(tmp_path, make_context, write_lines):
+    model = tmp_path / 'model.tsv'
+    write_lines(model, ['api\tdev\t1'])
+    ctx = make_context(tmp_path)
+    arm = PredictiveFeedbackArm('predictive-prefix-none', 'predictive_prefix', {
+        'model': str(model),
+        'generated_candidates_backend': 'none',
+    })
+    metrics = arm.on_new_discoveries(['api.example'], ctx)
+    state = arm._queue(ctx)
+    assert metrics['predictive-prefix-none_generated_candidates_backend'] == 'none'
+    assert metrics['predictive-prefix-none_persistent_generated_dedupe'] is False
+    assert metrics['predictive-prefix-none_candidates_enqueued'] == 1
+    assert state.load_queue() == ['dev.api.example']
+    assert not state.generated_sqlite_path.exists()
+    assert not state.generated_path.exists()
+
+
+def test_predictive_suffix_can_use_backend_none(tmp_path, make_context, write_lines):
+    model = tmp_path / 'model.tsv'
+    write_lines(model, ['api\tdev\t1'])
+    ctx = make_context(tmp_path)
+    arm = PredictiveFeedbackArm('predictive-suffix-none', 'predictive_suffix', {
+        'model': str(model),
+        'generated_candidates_backend': 'none',
+    })
+    metrics = arm.on_new_discoveries(['api.example'], ctx)
+    state = arm._queue(ctx)
+    assert metrics['predictive-suffix-none_generated_candidates_backend'] == 'none'
+    assert metrics['predictive-suffix-none_persistent_generated_dedupe'] is False
+    assert metrics['predictive-suffix-none_candidates_enqueued'] == 1
+    assert state.load_queue() == ['api.example.dev']
+    assert not state.generated_sqlite_path.exists()
+    assert not state.generated_path.exists()

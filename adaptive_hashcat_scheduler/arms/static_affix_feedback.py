@@ -42,7 +42,7 @@ class StaticAffixFeedbackArm(Arm):
 
     def _queue(self, context) -> FeedbackQueueState:
         if self.queue_state is None or str(self.queue_state.out_dir) != context.out_dir:
-            self.queue_state = FeedbackQueueState(context.out_dir, self.name)
+            self.queue_state = FeedbackQueueState(context.out_dir, self.name, self.config)
         return self.queue_state
 
     def _empty_metrics(self):
@@ -72,13 +72,18 @@ class StaticAffixFeedbackArm(Arm):
 
     def on_new_discoveries(self, discoveries, context) -> dict[str, Any]:
         q = self._queue(context)
-        generated = q.load_generated_candidates()
-        queued = set(q.load_queue())
+        queued = q.load_queue_candidates_set()
+        active = q.load_active_slice_candidates_set()
         expanded = q.load_expanded_bases()
+        expansion_seen: set[str] = set()
         cracked = {value for _, value in iter_potfile_cracks(context.potfile)}
         to_enqueue: list[str] = []
         bases: list[str] = []
         metrics = self._empty_metrics()
+        metrics['candidates_skipped_batch_duplicate'] = 0
+        metrics['candidates_skipped_queue_duplicate'] = 0
+        metrics['candidates_skipped_active_slice_duplicate'] = 0
+        metrics['candidates_skipped_already_cracked'] = 0
         gen_prefix = bool(self.config.get('generate_prefixes', True))
         gen_suffix = bool(self.config.get('generate_suffixes', True))
         for raw in discoveries:
@@ -106,20 +111,34 @@ class StaticAffixFeedbackArm(Arm):
                     metrics['rejected_candidates'] += 1
                     continue
                 if cand in cracked:
-                    metrics['affix_duplicates_already_cracked'] += 1; metrics['duplicates_skipped'] += 1
+                    metrics['affix_duplicates_already_cracked'] += 1; metrics['duplicates_skipped'] += 1; metrics['candidates_skipped_already_cracked'] += 1
                     continue
                 if cand in queued:
-                    metrics['affix_duplicates_queued'] += 1; metrics['duplicates_skipped'] += 1
+                    metrics['affix_duplicates_queued'] += 1; metrics['duplicates_skipped'] += 1; metrics['candidates_skipped_queue_duplicate'] += 1
                     continue
-                if cand in generated:
-                    metrics['affix_duplicates_generated'] += 1; metrics['duplicates_skipped'] += 1
+                if cand in active:
+                    metrics['duplicates_skipped'] += 1; metrics['candidates_skipped_active_slice_duplicate'] += 1
                     continue
-                generated.add(cand); queued.add(cand)
+                if cand in expansion_seen:
+                    metrics['duplicates_skipped'] += 1; metrics['candidates_skipped_batch_duplicate'] += 1
+                    continue
+                expansion_seen.add(cand); queued.add(cand)
                 to_enqueue.append(cand)
             expanded.add(base)
             bases.append(base)
             metrics['affix_bases_expanded'] += 1
-        metrics['candidates_enqueued'] = q.append_candidates(to_enqueue)
+        enq_stats = q.enqueue_generated_candidates(to_enqueue)
+        metrics['candidates_enqueued'] = enq_stats['candidates_enqueued']
+        metrics['affix_duplicates_generated'] += enq_stats['candidates_skipped_generated_duplicate']
+        metrics['duplicates_skipped'] += enq_stats['candidates_skipped_generated_duplicate']
+        metrics['generated_candidates_backend'] = enq_stats['generated_candidates_backend']
+        metrics['persistent_generated_dedupe'] = enq_stats['persistent_generated_dedupe']
+        metrics['candidates_skipped_generated_duplicate'] = enq_stats['candidates_skipped_generated_duplicate']
+        metrics['candidates_skipped_batch_duplicate'] += enq_stats['candidates_skipped_batch_duplicate']
+        metrics['candidates_skipped_queue_duplicate'] += enq_stats['candidates_skipped_queue_duplicate']
+        metrics['candidates_skipped_active_slice_duplicate'] += enq_stats['candidates_skipped_active_slice_duplicate']
+        metrics['candidates_skipped_already_cracked'] += enq_stats['candidates_skipped_already_cracked']
+        metrics['candidates_enqueued_total'] = enq_stats['candidates_enqueued_total']
         q.mark_bases_expanded(bases)
         self.last_expansion = metrics
         return {f'{self.name}_{k}': v for k, v in metrics.items()}
