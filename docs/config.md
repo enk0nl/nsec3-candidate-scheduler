@@ -71,6 +71,15 @@ Normal output contains slice progress, final summary, OSINT start/completion lin
 
 Hashcat optimized kernels (`-O`) are enabled by default with `hashcat.optimized_kernels=true`. They are faster, but hashcat can reject some long or otherwise problematic candidate/hash combinations while optimized kernels are enabled. The scheduler therefore also defaults `hashcat.optimized_kernel_failover=true`: when an optimized-kernel-specific hashcat error is detected, the failed attempt is logged as invalid work, optimized kernels are disabled globally for the remainder of the run, and the same slice is retried once without `-O`.
 
+Automatic failover also covers the hashcat parse pattern where optimized kernels are enabled, every hash is rejected, and no hashes are loaded, for example:
+
+```text
+* Token length exception: 22/22 hashes
+  No hashes loaded.
+```
+
+If the unoptimized retry succeeds, treat the original failure as an optimized-kernel compatibility issue. If the unoptimized retry also reports `Token length exception: N/N hashes` with `No hashes loaded`, the scheduler records a hashfile/hash-mode/input-format error instead and does not retry again. Partial token-length summaries such as `Token length exception: 2/22 hashes` do not trigger global optimized-kernel failover by default because they usually indicate mixed or malformed input rows.
+
 ```json
 {
   "hashcat": {
