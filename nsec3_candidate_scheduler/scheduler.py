@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-import datetime as dt, json, os, random, shutil, time
+import datetime as dt, json, os, random, re, shutil, time
 from typing import Any
 
 from nsec3_candidate_scheduler.config import load_config
@@ -8,6 +8,14 @@ from nsec3_candidate_scheduler.hashcat.potfile import iter_potfile_cracks
 from nsec3_candidate_scheduler.hashcat.runner import EXIT_MEANINGS
 from nsec3_candidate_scheduler.arms.registry import FEEDBACK_TYPES, OSINT_TYPES, make_arm
 from nsec3_candidate_scheduler.naming import safe_name, arm_family, arm_short_name
+
+@dataclass
+class HashcatFailureClassification:
+    reason: str
+    hint: str
+    retryable_with_unoptimized: bool
+    parse_error_count: int | None = None
+    parse_error_total: int | None = None
 
 @dataclass
 class SchedulerContext:
@@ -154,18 +162,68 @@ def _feedback_queue_fields(rec):
     )
 
 
-def _optimized_kernel_failure_hint(enabled: bool, exit_code: int, stdout: str, stderr: str, failover_enabled: bool = True) -> str | None:
-    if not enabled or exit_code in (0, 1, 4):
+TOKEN_LENGTH_SUMMARY_RE = re.compile(r"Token length exception:\s*(\d+)\s*/\s*(\d+)\s*hashes", re.IGNORECASE)
+OPTIMIZED_KERNEL_RETRY_REASONS = {"optimized_kernel_failure", "optimized_kernel_all_hashes_token_length"}
+
+def _parse_token_length_summary(text: str) -> tuple[int | None, int | None]:
+    match = TOKEN_LENGTH_SUMMARY_RE.search(text)
+    if not match:
+        return None, None
+    return int(match.group(1)), int(match.group(2))
+
+def classify_hashcat_failure(
+    *,
+    optimized_kernels: bool,
+    exit_code: int,
+    exit_meaning: str,
+    stdout: str,
+    stderr: str,
+    failover_enabled: bool = True,
+) -> HashcatFailureClassification | None:
+    text = stdout + '\n' + stderr
+    text_lc = text.lower()
+    parse_error_count, parse_error_total = _parse_token_length_summary(text)
+    all_hashes_token_length = (
+        parse_error_count is not None
+        and parse_error_total is not None
+        and parse_error_total > 0
+        and parse_error_count == parse_error_total
+        and 'no hashes loaded' in text_lc
+    )
+
+    if exit_code in (0, 1, 4) or exit_meaning != 'error':
         return None
-    text = (stdout + '\n' + stderr).lower()
-    if 'optimized' in text and ('length' in text or 'plaintext' in text):
+
+    if all_hashes_token_length and not optimized_kernels:
+        return HashcatFailureClassification(
+            reason='hashfile_parse_error_all_hashes_token_length',
+            hint='Hashcat rejected all hashes with Token length exception and no hashes were loaded. This looks like a hashfile, hash-mode, or input-format error.',
+            retryable_with_unoptimized=False,
+            parse_error_count=parse_error_count,
+            parse_error_total=parse_error_total,
+        )
+
+    if optimized_kernels and 'optimized' in text_lc and ('length' in text_lc or 'plaintext' in text_lc):
         if failover_enabled:
-            return 'Hashcat failed with optimized kernels enabled. Retrying with unoptimized kernels.'
-        return 'Hashcat failed with optimized kernels enabled. Automatic failover is disabled; continuing with optimized kernels.'
+            hint = 'Hashcat failed with optimized kernels enabled. Retrying with unoptimized kernels.'
+        else:
+            hint = 'Hashcat failed with optimized kernels enabled. Automatic failover is disabled; continuing with optimized kernels.'
+        return HashcatFailureClassification('optimized_kernel_failure', hint, failover_enabled, parse_error_count, parse_error_total)
+
+    if all_hashes_token_length and optimized_kernels:
+        if failover_enabled:
+            hint = 'Hashcat rejected all hashes with Token length exception while optimized kernels were enabled. Retrying with unoptimized kernels.'
+        else:
+            hint = 'Hashcat rejected all hashes with Token length exception while optimized kernels were enabled. Automatic failover is disabled; continuing with optimized kernels.'
+        return HashcatFailureClassification('optimized_kernel_all_hashes_token_length', hint, failover_enabled, parse_error_count, parse_error_total)
+
     return None
 
-def _is_optimized_kernel_failure(enabled: bool, exit_code: int, exit_meaning: str, hint: str | None) -> bool:
-    return bool(enabled and (exit_meaning == 'error' or exit_code != 0) and hint)
+def _optimized_kernel_failure_hint(enabled: bool, exit_code: int, stdout: str, stderr: str, failover_enabled: bool = True) -> str | None:
+    classification = classify_hashcat_failure(optimized_kernels=enabled, exit_code=exit_code, exit_meaning=EXIT_MEANINGS.get(exit_code, 'error'), stdout=stdout, stderr=stderr, failover_enabled=failover_enabled)
+    if classification and classification.reason in OPTIMIZED_KERNEL_RETRY_REASONS:
+        return classification.hint
+    return None
 
 def format_slice_oneline(rec: dict[str, Any], total_slices: int) -> str:
     prefix = (
@@ -366,9 +424,11 @@ def run_scheduler(args) -> int:
                         for debug_record in expansion.get('parent_debug_expansions', []):
                             print('Feedback expansion: '+json.dumps({'arm': a.name, **debug_record}, separators=(',', ':')), flush=True)
             exit_meaning = EXIT_MEANINGS.get(res.exit_code,'error')
-            optimized_hint = _optimized_kernel_failure_hint(ctx.hashcat_optimized_kernels, res.exit_code, res.stdout, res.stderr, ctx.optimized_kernel_failover)
-            optimized_failure = _is_optimized_kernel_failure(ctx.hashcat_optimized_kernels, res.exit_code, exit_meaning, optimized_hint)
-            valid_work = bool(res.valid_work and res.extra.get('feedback_valid_work', True)) and not optimized_failure
+            classification = classify_hashcat_failure(optimized_kernels=ctx.hashcat_optimized_kernels, exit_code=res.exit_code, exit_meaning=exit_meaning, stdout=res.stdout, stderr=res.stderr, failover_enabled=ctx.optimized_kernel_failover)
+            optimized_hint = classification.hint if classification and classification.reason in OPTIMIZED_KERNEL_RETRY_REASONS else None
+            optimized_failure = bool(classification and classification.retryable_with_unoptimized and classification.reason in OPTIMIZED_KERNEL_RETRY_REASONS)
+            invalid_classified_failure = bool(classification and classification.reason in (OPTIMIZED_KERNEL_RETRY_REASONS | {'hashfile_parse_error_all_hashes_token_length'}))
+            valid_work = bool(res.valid_work and res.extra.get('feedback_valid_work', True)) and not invalid_classified_failure
             marginal=len(new_pairs) if valid_work else 0
             reward_count = arm_local_new_cracks if use_arm_local else marginal
             reward=(reward_count/res.runtime_seconds) if res.runtime_seconds>0 and valid_work else 0.0
@@ -380,7 +440,7 @@ def run_scheduler(args) -> int:
                 arm.last_run_adaptive_slice=current_adaptive_slice; current_adaptive_slice+=1
             n=arm.config.get('force_every_slices'); since=(current_adaptive_slice-arm.last_run_adaptive_slice) if n else None
             availability_fields = {k: v for k, v in getattr(arm, 'last_availability', {}).items() if k != 'available'}
-            if optimized_failure and not ctx.optimized_kernel_failover:
+            if classification and classification.reason in OPTIMIZED_KERNEL_RETRY_REASONS and not ctx.optimized_kernel_failover:
                 availability_fields['availability_reason'] = 'optimized_kernel_failure_no_failover'
                 arm.optimized_kernel_failure_count = getattr(arm, 'optimized_kernel_failure_count', 0) + 1
                 arm.last_optimized_kernel_failure_job_id = job
@@ -392,11 +452,14 @@ def run_scheduler(args) -> int:
                  'skip_before':res.skip_before,'next_skip_after':res.next_skip_after,'runtime_seconds':res.runtime_seconds,
                  'exit_code':res.exit_code,'exit_meaning':exit_meaning,'execution_status':res.execution_status,'valid_work':valid_work,'scored':scored,'progress_source':res.progress_source,
                  'hashcat_optimized_kernels':ctx.hashcat_optimized_kernels,'hashcat_optimized_kernel_hint':optimized_hint,
-                 'optimized_kernel_failover_enabled':ctx.optimized_kernel_failover if optimized_failure else None,
-                 'retryable':(ctx.optimized_kernel_failover and optimized_failure) if optimized_failure else None,
-                 'retry_reason':'optimized_kernel_failure' if (optimized_failure or retry_reason == 'optimized_kernel_failure') else retry_reason,
-                 'retry_scheduled':(ctx.optimized_kernel_failover and optimized_failure) if optimized_failure else None,
+                 'optimized_kernel_failover_enabled':ctx.optimized_kernel_failover if (classification and classification.reason in OPTIMIZED_KERNEL_RETRY_REASONS) else None,
+                 'retryable':classification.retryable_with_unoptimized if (classification and classification.reason in OPTIMIZED_KERNEL_RETRY_REASONS) else None,
+                 'retry_reason':classification.reason if classification and classification.reason in OPTIMIZED_KERNEL_RETRY_REASONS else retry_reason,
+                 'retry_scheduled':optimized_failure if (classification and classification.reason in OPTIMIZED_KERNEL_RETRY_REASONS) else False if (classification and classification.reason == 'hashfile_parse_error_all_hashes_token_length') else None,
                  'retry_of_job_id':retry_of_job_id,
+                 'hashcat_failure_class':classification.reason if classification and classification.reason == 'hashfile_parse_error_all_hashes_token_length' else None,
+                 'hashcat_parse_error_count':classification.parse_error_count if classification else None,
+                 'hashcat_parse_error_total':classification.parse_error_total if classification else None,
                  'dictionary_candidate_cursor':res.dictionary_candidate_cursor,'new_cracks':marginal,'marginal_new_cracks':marginal,'shared_new_cracks':marginal,
                  'warmup_scoring':warmup_scoring if phase == 'warmup' else 'shared_marginal',
                  'potfile_scope':'arm_local' if use_arm_local else 'shared',
@@ -412,9 +475,17 @@ def run_scheduler(args) -> int:
             with open(os.path.join(args.out_dir,'hashcat_logs',f'job_{job:06d}.log'),'w',encoding='utf-8') as f: f.write(res.stdout+'\n'+res.stderr)
             completed_slices += 1
             if optimized_failure and ctx.optimized_kernel_failover:
+                if hasattr(arm, 'next_skip') and res.skip_before is not None:
+                    arm.next_skip = res.skip_before
                 ctx.hashcat_optimized_kernels = False
-                pending_retry = (arm, reason, job, 'optimized_kernel_failure')
-            elif optimized_failure:
+                pending_retry = (arm, reason, job, classification.reason)
+            elif classification and classification.reason in OPTIMIZED_KERNEL_RETRY_REASONS:
+                if hasattr(arm, 'next_skip') and res.skip_before is not None:
+                    arm.next_skip = res.skip_before
+                skipped_this_completed_slice.add(arm.name)
+            elif classification and classification.reason == 'hashfile_parse_error_all_hashes_token_length':
+                if hasattr(arm, 'next_skip') and res.skip_before is not None:
+                    arm.next_skip = res.skip_before
                 skipped_this_completed_slice.add(arm.name)
             else:
                 skipped_this_completed_slice = set()

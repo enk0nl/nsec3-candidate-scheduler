@@ -54,6 +54,39 @@ When automatic failover is enabled, the failed optimized attempt includes fields
 }
 ```
 
+
+
+All-hashes token-length failures use the same failover metadata with a more specific retry reason and parse counts:
+
+```json
+{
+  "hashcat_optimized_kernels": true,
+  "hashcat_optimized_kernel_hint": "Hashcat rejected all hashes with Token length exception while optimized kernels were enabled. Retrying with unoptimized kernels.",
+  "optimized_kernel_failover_enabled": true,
+  "valid_work": false,
+  "scored": false,
+  "retryable": true,
+  "retry_reason": "optimized_kernel_all_hashes_token_length",
+  "retry_scheduled": true,
+  "hashcat_parse_error_count": 22,
+  "hashcat_parse_error_total": 22
+}
+```
+
+The trigger requires both a summary such as `Token length exception: 22/22 hashes` and `No hashes loaded`. A partial summary such as `Token length exception: 2/22 hashes` is not treated as a global optimized-kernel failover signal by default. If the unoptimized retry also fails with all hashes rejected, the retry record is classified as a hashfile/hash-mode/input-format problem and no further retry is scheduled:
+
+```json
+{
+  "hashcat_optimized_kernels": false,
+  "valid_work": false,
+  "scored": false,
+  "retry_scheduled": false,
+  "hashcat_failure_class": "hashfile_parse_error_all_hashes_token_length",
+  "hashcat_parse_error_count": 22,
+  "hashcat_parse_error_total": 22
+}
+```
+
 The retry record links back to the failed job and runs without optimized kernels:
 
 ```json
