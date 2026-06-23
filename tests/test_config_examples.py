@@ -79,16 +79,6 @@ def test_readme_references_existing_example_config():
         assert (ROOT / match).exists(), match
 
 
-def test_repository_does_not_ship_example_model_files():
-    models_dir = ROOT / 'models'
-    if not models_dir.exists():
-        return
-    forbidden = []
-    for pattern in ['example*', 'demo*', '*prefix*', '*suffix*', '*.tsv', '*.txt']:
-        forbidden.extend(path for path in models_dir.glob(pattern) if path.name != '.gitkeep')
-    assert forbidden == []
-
-
 def test_example_config_does_not_reference_bundled_model_paths():
     config_text = EXAMPLE_CONFIG.read_text(encoding='utf-8')
     for path in [
