@@ -221,6 +221,9 @@ def load_config(path: str) -> dict[str, Any]:
     if not isinstance(hashcat_cfg, dict): raise ValueError('hashcat config must be an object')
     optimized = hashcat_cfg.get('optimized_kernels')
     if optimized is not None and not isinstance(optimized, bool): raise ValueError('hashcat.optimized_kernels must be boolean')
+    failover = hashcat_cfg.get('optimized_kernel_failover')
+    if failover is not None and not isinstance(failover, bool): raise ValueError('hashcat.optimized_kernel_failover must be boolean')
+    cfg['hashcat'] = {**hashcat_cfg, 'optimized_kernels': bool(hashcat_cfg.get('optimized_kernels', True)), 'optimized_kernel_failover': bool(hashcat_cfg.get('optimized_kernel_failover', True))}
     raw_arms = cfg.get('arms')
     if not isinstance(raw_arms, list): raise ValueError('arms must be a list')
     arms: list[dict[str, Any]] = []
