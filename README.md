@@ -70,3 +70,50 @@ python3 -m pytest -v tests
 ## Safety and scope
 
 NSEC3 Candidate Scheduler launches hashcat and optional OSINT binaries configured by the operator. It does not manage OSINT provider credentials, does not bundle large wordlists or models, and does not auto-migrate old run directories after arm names change. Use a fresh `out_dir` after renaming arms.
+
+## Optimized kernels
+
+Hashcat optimized kernels (`-O`) are used by default because they are faster. Some long/problematic candidates can fail under optimized kernels, so the scheduler defaults to automatic optimized-kernel failover: it logs the failed optimized attempt as `valid_work=false` and `scored=false`, disables optimized kernels for the rest of the run, retries the failed slice once unoptimized, and records retry metadata in `jobs.jsonl`.
+
+Default automatic failover:
+
+```sh
+python3 -m nsec3_candidate_scheduler run \
+  --hashes hashes.txt \
+  --hash-mode 8300 \
+  --config example_config.json \
+  --out-dir out \
+  --schedule adaptive \
+  --total-slices 150 \
+  --slice-seconds 60
+```
+
+Disable optimized kernels from the start:
+
+```sh
+python3 -m nsec3_candidate_scheduler run \
+  --hashes hashes.txt \
+  --hash-mode 8300 \
+  --config example_config.json \
+  --out-dir out \
+  --schedule adaptive \
+  --total-slices 150 \
+  --slice-seconds 60 \
+  --no-optimized-kernels
+```
+
+Keep optimized kernels enabled and disable automatic failover:
+
+```sh
+python3 -m nsec3_candidate_scheduler run \
+  --hashes hashes.txt \
+  --hash-mode 8300 \
+  --config example_config.json \
+  --out-dir out \
+  --schedule adaptive \
+  --total-slices 150 \
+  --slice-seconds 60 \
+  --no-optimized-kernel-failover
+```
+
+The corresponding config keys are `hashcat.optimized_kernels` and `hashcat.optimized_kernel_failover`.

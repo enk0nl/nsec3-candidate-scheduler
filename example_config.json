@@ -2,8 +2,13 @@
   "random_seed": 1337,
   "alpha": 0.15,
   "epsilon": 0.1,
-  "warmup": { "scoring": "arm_local" },
-  "hashcat": { "optimized_kernels": true },
+  "warmup": {
+    "scoring": "arm_local"
+  },
+  "hashcat": {
+    "optimized_kernels": true,
+    "optimized_kernel_failover": true
+  },
   "arms": [
     {
       "name": "wordlist/seclists",
@@ -27,7 +32,12 @@
       "type": "brute_force",
       "enabled": true,
       "custom_charset_1": "abcdefghijklmnopqrstuvwxyz0123456789-",
-      "masks": ["?1?1", "?1?1?1", "?1?1?1?1", "?1?1?1?1?1"]
+      "masks": [
+        "?1?1",
+        "?1?1?1",
+        "?1?1?1?1",
+        "?1?1?1?1?1"
+      ]
     },
     {
       "name": "feedback/predictive-prefix",
@@ -79,8 +89,28 @@
       "enabled": true,
       "generated_candidates_backend": "sqlite",
       "retain_generated_candidates_text": false,
-      "numeric": { "enabled": true, "min_width": 1, "max_width": 4, "generate_full_range": true, "generate_width_variants": true, "generate_local_radius": true, "local_radius": 50, "allow_wider_width_variants": false, "allow_large_numeric_ranges": false },
-      "alpha": { "enabled": true, "charset": "abcdefghijklmnopqrstuvwxyz", "min_width": 1, "max_width": 3, "generate_full_range": true, "generate_width_variants": true, "allow_wider_width_variants": false, "allow_large_alpha_ranges": false, "require_numeric_context": true },
+      "numeric": {
+        "enabled": true,
+        "min_width": 1,
+        "max_width": 4,
+        "generate_full_range": true,
+        "generate_width_variants": true,
+        "generate_local_radius": true,
+        "local_radius": 50,
+        "allow_wider_width_variants": false,
+        "allow_large_numeric_ranges": false
+      },
+      "alpha": {
+        "enabled": true,
+        "charset": "abcdefghijklmnopqrstuvwxyz",
+        "min_width": 1,
+        "max_width": 3,
+        "generate_full_range": true,
+        "generate_width_variants": true,
+        "allow_wider_width_variants": false,
+        "allow_large_alpha_ranges": false,
+        "require_numeric_context": true
+      },
       "min_slices_between_runs": 5,
       "min_queue_size": 500,
       "force_every_slices": 10,

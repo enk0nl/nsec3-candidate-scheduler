@@ -13,6 +13,7 @@ from nsec3_candidate_scheduler.naming import safe_name, arm_family, arm_short_na
 class SchedulerContext:
     hashes: str; hash_mode: int; out_dir: str; slice_seconds: int; potfile: str
     hashcat_bin: str='hashcat'; default_limit: int=1000000; hashcat_optimized_kernels: bool=True
+    optimized_kernel_failover: bool=True
     potfile_path_override: str | None = None
 
 def utc_now(): return dt.datetime.now(dt.timezone.utc).isoformat()
@@ -153,13 +154,18 @@ def _feedback_queue_fields(rec):
     )
 
 
-def _optimized_kernel_failure_hint(enabled: bool, exit_code: int, stdout: str, stderr: str) -> str | None:
+def _optimized_kernel_failure_hint(enabled: bool, exit_code: int, stdout: str, stderr: str, failover_enabled: bool = True) -> str | None:
     if not enabled or exit_code in (0, 1, 4):
         return None
     text = (stdout + '\n' + stderr).lower()
     if 'optimized' in text and ('length' in text or 'plaintext' in text):
-        return 'Hashcat failed with optimized kernels enabled. Try rerunning with --no-optimized-kernels.'
+        if failover_enabled:
+            return 'Hashcat failed with optimized kernels enabled. Retrying with unoptimized kernels.'
+        return 'Hashcat failed with optimized kernels enabled. Automatic failover is disabled; continuing with optimized kernels.'
     return None
+
+def _is_optimized_kernel_failure(enabled: bool, exit_code: int, exit_meaning: str, hint: str | None) -> bool:
+    return bool(enabled and (exit_meaning == 'error' or exit_code != 0) and hint)
 
 def format_slice_oneline(rec: dict[str, Any], total_slices: int) -> str:
     prefix = (
@@ -274,9 +280,12 @@ def run_scheduler(args) -> int:
     warmup_scoring = cfg_warmup.get('scoring', 'arm_local')
     cfg_hashcat = cfg.get('hashcat') or {}
     optimized_kernels = bool(cfg_hashcat.get('optimized_kernels', True))
+    optimized_kernel_failover = bool(cfg_hashcat.get('optimized_kernel_failover', True))
+    if getattr(args, 'optimized_kernel_failover', None) is not None:
+        optimized_kernel_failover = bool(args.optimized_kernel_failover)
     if getattr(args, 'no_optimized_kernels', False):
         optimized_kernels = False
-    ctx=SchedulerContext(args.hashes,args.hash_mode,args.out_dir,args.slice_seconds,potfile,getattr(args,'hashcat_bin','hashcat'),getattr(args,'default_limit',1000000),optimized_kernels)
+    ctx=SchedulerContext(args.hashes,args.hash_mode,args.out_dir,args.slice_seconds,potfile,getattr(args,'hashcat_bin','hashcat'),getattr(args,'default_limit',1000000),optimized_kernels,optimized_kernel_failover)
     choose_arm.context=ctx
     for _arm in arms:
         starter=getattr(_arm, 'start', None)
@@ -296,12 +305,22 @@ def run_scheduler(args) -> int:
     console_mode = 'quiet' if getattr(args, 'quiet', False) else ('verbose' if getattr(args, 'verbose', False) else 'default')
     attempted_jobs = 0
     skipped_this_completed_slice = set()
+    pending_retry = None
     try:
-        while completed_slices < total_slices:
-            job = completed_slices + 1
+        while completed_slices < total_slices or pending_retry is not None:
+            job = attempted_jobs + 1
             choose_arm.skip_once = skipped_this_completed_slice
-            arm,reason=choose_arm(arms,args.schedule,warmup if args.schedule=='adaptive' else [],epsilon,rng,current_adaptive_slice)
+            if pending_retry is not None:
+                arm, reason, retry_of_job_id, retry_reason = pending_retry
+                pending_retry = None
+            else:
+                retry_of_job_id = None
+                retry_reason = None
+                arm,reason=choose_arm(arms,args.schedule,warmup if args.schedule=='adaptive' else [],epsilon,rng,current_adaptive_slice)
             if arm is None:
+                if skipped_this_completed_slice:
+                    skipped_this_completed_slice = set()
+                    continue
                 if console_mode == 'verbose':
                     for unavailable in getattr(choose_arm, 'unavailable', []):
                         print('Unavailable arm: '+json.dumps(unavailable,separators=(',',':')), flush=True)
@@ -346,25 +365,38 @@ def run_scheduler(args) -> int:
                     if (console_mode == 'verbose' or a.config.get('debug_expansions')) and expansion.get('parent_debug_expansions'):
                         for debug_record in expansion.get('parent_debug_expansions', []):
                             print('Feedback expansion: '+json.dumps({'arm': a.name, **debug_record}, separators=(',', ':')), flush=True)
-            valid_work = bool(res.valid_work and res.extra.get('feedback_valid_work', True))
-            marginal=len(new_pairs)
+            exit_meaning = EXIT_MEANINGS.get(res.exit_code,'error')
+            optimized_hint = _optimized_kernel_failure_hint(ctx.hashcat_optimized_kernels, res.exit_code, res.stdout, res.stderr, ctx.optimized_kernel_failover)
+            optimized_failure = _is_optimized_kernel_failure(ctx.hashcat_optimized_kernels, res.exit_code, exit_meaning, optimized_hint)
+            valid_work = bool(res.valid_work and res.extra.get('feedback_valid_work', True)) and not optimized_failure
+            marginal=len(new_pairs) if valid_work else 0
             reward_count = arm_local_new_cracks if use_arm_local else marginal
             reward=(reward_count/res.runtime_seconds) if res.runtime_seconds>0 and valid_work else 0.0
+            scored = bool(valid_work)
             if valid_work:
                 arm.score=arm.score+alpha*(reward-arm.score)
-            arm.runs+=1; arm.total_runtime+=res.runtime_seconds; arm.total_new_cracks+=marginal
+                arm.runs+=1; arm.total_runtime+=res.runtime_seconds; arm.total_new_cracks+=marginal
             if args.schedule=='adaptive' and reason!='warmup' and valid_work:
                 arm.last_run_adaptive_slice=current_adaptive_slice; current_adaptive_slice+=1
             n=arm.config.get('force_every_slices'); since=(current_adaptive_slice-arm.last_run_adaptive_slice) if n else None
             availability_fields = {k: v for k, v in getattr(arm, 'last_availability', {}).items() if k != 'available'}
-            optimized_hint = _optimized_kernel_failure_hint(ctx.hashcat_optimized_kernels, res.exit_code, res.stdout, res.stderr)
+            if optimized_failure and not ctx.optimized_kernel_failover:
+                availability_fields['availability_reason'] = 'optimized_kernel_failure_no_failover'
+                arm.optimized_kernel_failure_count = getattr(arm, 'optimized_kernel_failure_count', 0) + 1
+                arm.last_optimized_kernel_failure_job_id = job
+                arm.optimized_kernel_failure_cooldown_slices = 1
             if console_mode == 'verbose':
                 for unavailable in getattr(choose_arm, 'unavailable', []):
                     print('Unavailable arm: '+json.dumps(unavailable,separators=(',',':')), flush=True)
             rec={'timestamp':utc_now(),'job_id':job,'phase':phase,'arm':arm.name,'arm_family':arm_family(arm.name),'arm_short_name':arm_short_name(arm.name),'arm_type':arm.type,'attack_type':arm.type,'selection_reason':reason,'requested_slice_seconds':requested_slice_seconds,
                  'skip_before':res.skip_before,'next_skip_after':res.next_skip_after,'runtime_seconds':res.runtime_seconds,
-                 'exit_code':res.exit_code,'exit_meaning':EXIT_MEANINGS.get(res.exit_code,'error'),'execution_status':res.execution_status,'valid_work':valid_work,'progress_source':res.progress_source,
+                 'exit_code':res.exit_code,'exit_meaning':exit_meaning,'execution_status':res.execution_status,'valid_work':valid_work,'scored':scored,'progress_source':res.progress_source,
                  'hashcat_optimized_kernels':ctx.hashcat_optimized_kernels,'hashcat_optimized_kernel_hint':optimized_hint,
+                 'optimized_kernel_failover_enabled':ctx.optimized_kernel_failover if optimized_failure else None,
+                 'retryable':(ctx.optimized_kernel_failover and optimized_failure) if optimized_failure else None,
+                 'retry_reason':'optimized_kernel_failure' if (optimized_failure or retry_reason == 'optimized_kernel_failure') else retry_reason,
+                 'retry_scheduled':(ctx.optimized_kernel_failover and optimized_failure) if optimized_failure else None,
+                 'retry_of_job_id':retry_of_job_id,
                  'dictionary_candidate_cursor':res.dictionary_candidate_cursor,'new_cracks':marginal,'marginal_new_cracks':marginal,'shared_new_cracks':marginal,
                  'warmup_scoring':warmup_scoring if phase == 'warmup' else 'shared_marginal',
                  'potfile_scope':'arm_local' if use_arm_local else 'shared',
@@ -379,7 +411,13 @@ def run_scheduler(args) -> int:
             with open(jobs_path,'a',encoding='utf-8') as f: f.write(json.dumps(rec,separators=(',',':'))+'\n')
             with open(os.path.join(args.out_dir,'hashcat_logs',f'job_{job:06d}.log'),'w',encoding='utf-8') as f: f.write(res.stdout+'\n'+res.stderr)
             completed_slices += 1
-            skipped_this_completed_slice = set()
+            if optimized_failure and ctx.optimized_kernel_failover:
+                ctx.hashcat_optimized_kernels = False
+                pending_retry = (arm, reason, job, 'optimized_kernel_failure')
+            elif optimized_failure:
+                skipped_this_completed_slice.add(arm.name)
+            else:
+                skipped_this_completed_slice = set()
             print_slice_progress(rec, total_slices, console_mode)
     finally:
         for _arm in arms:

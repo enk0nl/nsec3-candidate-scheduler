@@ -34,3 +34,49 @@ Completed slice files are not retained by default. If `retain_completed_slices` 
 ## OSINT state
 
 OSINT arms write under `osint/<safe-arm-name>/`: `state.json`, tool log, tool err, tool pid, `raw_names.txt`, and `candidates.txt`. Amass uses `amass.log`, `amass.err`, and `amass.pid`; Subfinder uses `subfinder.log`, `subfinder.err`, and `subfinder.pid`.
+
+### Optimized-kernel failover fields
+
+Optimized-kernel-specific hashcat execution failures are logged but are not treated as valid cracking work. `valid_work=false` means hashcat launched but the result should not be treated as a valid slice; `scored=false` means the arm reward/score is not updated from that attempt.
+
+When automatic failover is enabled, the failed optimized attempt includes fields such as:
+
+```json
+{
+  "hashcat_optimized_kernels": true,
+  "hashcat_optimized_kernel_hint": "Hashcat failed with optimized kernels enabled. Retrying with unoptimized kernels.",
+  "optimized_kernel_failover_enabled": true,
+  "valid_work": false,
+  "scored": false,
+  "retryable": true,
+  "retry_reason": "optimized_kernel_failure",
+  "retry_scheduled": true
+}
+```
+
+The retry record links back to the failed job and runs without optimized kernels:
+
+```json
+{
+  "hashcat_optimized_kernels": false,
+  "retry_of_job_id": 24,
+  "retry_reason": "optimized_kernel_failure"
+}
+```
+
+When `--no-optimized-kernel-failover` or `hashcat.optimized_kernel_failover=false` is used, the failed optimized attempt includes:
+
+```json
+{
+  "hashcat_optimized_kernels": true,
+  "hashcat_optimized_kernel_hint": "Hashcat failed with optimized kernels enabled. Automatic failover is disabled; continuing with optimized kernels.",
+  "optimized_kernel_failover_enabled": false,
+  "valid_work": false,
+  "scored": false,
+  "retryable": false,
+  "retry_reason": "optimized_kernel_failure",
+  "retry_scheduled": false
+}
+```
+
+`retry_scheduled=true` means the scheduler will retry the same slice with optimized kernels disabled. `retry_of_job_id` links the retry job to the failed optimized-kernel attempt. `optimized_kernel_failover_enabled=false` means the operator chose to continue optimized despite failures.

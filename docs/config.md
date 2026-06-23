@@ -66,3 +66,40 @@ Subfinder fields include `subfinder_binary`, `domain`, `start_on_run_start`, `po
 ## Logging
 
 Normal output contains slice progress, final summary, OSINT start/completion lines, actual errors, and concrete disk threshold warnings. Arm inventory, backend policy, unavailable-arm details, and queue diagnostics are verbose/debug output.
+
+## Hashcat optimized kernels and failover
+
+Hashcat optimized kernels (`-O`) are enabled by default with `hashcat.optimized_kernels=true`. They are faster, but hashcat can reject some long or otherwise problematic candidate/hash combinations while optimized kernels are enabled. The scheduler therefore also defaults `hashcat.optimized_kernel_failover=true`: when an optimized-kernel-specific hashcat error is detected, the failed attempt is logged as invalid work, optimized kernels are disabled globally for the remainder of the run, and the same slice is retried once without `-O`.
+
+```json
+{
+  "hashcat": {
+    "optimized_kernels": true,
+    "optimized_kernel_failover": true
+  }
+}
+```
+
+Operators who prefer speed and accept that some arms or candidate sets may fail can keep optimized kernels enabled and disable automatic failover:
+
+```json
+{
+  "hashcat": {
+    "optimized_kernels": true,
+    "optimized_kernel_failover": false
+  }
+}
+```
+
+Fully unoptimized operation disables `-O` from the start. In that mode the failover setting is effectively irrelevant because optimized kernels are already disabled:
+
+```json
+{
+  "hashcat": {
+    "optimized_kernels": false,
+    "optimized_kernel_failover": true
+  }
+}
+```
+
+CLI precedence is: `--no-optimized-kernels` overrides `hashcat.optimized_kernels`, and `--optimized-kernel-failover` / `--no-optimized-kernel-failover` override `hashcat.optimized_kernel_failover`. Use `--no-optimized-kernels` to start without optimized kernels, `--optimized-kernel-failover` for the default automatic retry policy, and `--no-optimized-kernel-failover` to log optimized-kernel failures without retrying unoptimized.
