@@ -26,8 +26,8 @@ Arm types remain flat: `dictionary`, `brute_force`, `feedback`, `predictive_pref
 | `type` | string | Required implementation selector. Unknown disabled types fail validation. |
 | `enabled` | boolean | Disabled arms are schema-validated but not instantiated. |
 | `slice_seconds` | positive integer | Optional per-arm override for CLI `--slice-seconds`. Logged as `requested_slice_seconds`. |
-| `force_every_slices` | positive integer | Optional adaptive cadence override. |
-| `min_slices_between_runs` | non-negative integer | Feedback/OSINT cooldown. |
+| `force_every_slices` | positive integer | Optional feedback forced-cadence interval, measured in valid scheduler slices. |
+| `min_slices_between_runs` | non-negative integer | Feedback/OSINT cooldown. Feedback arms measure this in valid scheduler slices. |
 | `min_queue_size` | non-negative integer | Feedback queue gate. |
 
 ## Dictionary arms
@@ -55,6 +55,8 @@ Dedupe backends:
 Recommended defaults: `generated_candidates_backend="none"` for `feedback/predictive-prefix`, `feedback/predictive-suffix`, and `feedback/static-affix-top5000`; `sqlite` for `feedback/permutation-numeric` and `feedback/parent-domain`. `retain_generated_candidates_text=false` avoids optional audit text output with SQLite.
 
 Queue files are text files. `queue.txt` is still loaded and rewritten for slicing and membership checks; this is a known scalability limit.
+
+Feedback forced cadence is based on valid scheduler slices, not only adaptive-learning slices. Valid warm-up, adaptive, retry, and forced feedback slices count when they produce valid scored scheduler work; invalid/no-progress jobs and failed optimized-kernel attempts do not. Adaptive scoring remains separate, so warm-up slices can advance feedback cadence and cooldown without becoming adaptive-learning samples. This means `force_every_slices: 10` for a feedback arm means the arm can become force-eligible after 10 valid scheduler slices, including warm-up slices that may have produced cracks and feedback candidates. Queue, active-slice, and minimum-candidate gates still apply.
 
 ## OSINT arms
 
