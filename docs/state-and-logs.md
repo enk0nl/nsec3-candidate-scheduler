@@ -14,6 +14,8 @@
 
 Configured arm names are preserved in logs as `arm`. File paths use `nsec3_candidate_scheduler.naming.safe_name()`, so `feedback/parent-domain` maps to `feedback-parent-domain`. Arm renames are state-breaking; use a fresh `out_dir` after renaming arms.
 
+Hashcat potfiles may contain an empty plaintext value. The scheduler preserves such entries for crack accounting and shared `run.pot` merging, but it does not feed empty plaintexts into DNS feedback generators.
+
 ## `jobs.jsonl`
 
 Slice records include `arm`, `arm_family`, `arm_short_name`, `arm_type`, `selection_reason`, `requested_slice_seconds`, `runtime_seconds`, score fields, crack counts, hashcat exit status, and arm-specific metrics. OSINT completion records use `event="osint_completed"` with `status` equal to `ready`, `exhausted`, or `failed`.

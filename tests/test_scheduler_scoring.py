@@ -24,8 +24,8 @@ def _fake_dictionary_run_cmd(cmd):
     return 1, '', ''
 
 
-def _run_scheduler_with_wordlists(tmp_path, monkeypatch, *, warmup_scoring='arm_local', seclists_values=None, pcfg_values=None, extra_arms=None, total_slices=2):
-    monkeypatch.setattr('nsec3_candidate_scheduler.arms.dictionary.run_cmd', _fake_dictionary_run_cmd)
+def _run_scheduler_with_wordlists(tmp_path, monkeypatch, *, warmup_scoring='arm_local', seclists_values=None, pcfg_values=None, extra_arms=None, total_slices=2, run_cmd=None):
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.dictionary.run_cmd', run_cmd or _fake_dictionary_run_cmd)
     seclists = tmp_path / 'seclists.txt'; pcfg = tmp_path / 'pcfg.txt'
     seclists.write_text('\n'.join(seclists_values or ['www', 'test1', 'test2']) + '\n', encoding='utf-8')
     pcfg.write_text('\n'.join(pcfg_values or ['www', 'test2', 'test3']) + '\n', encoding='utf-8')
@@ -88,3 +88,72 @@ def test_score_update_uses_reward_used_for_score():
     score_before = 0
     reward_used_for_score = 100
     assert score_before + alpha * (reward_used_for_score - score_before) == 15
+
+
+def test_warmup_empty_plaintext_is_merged_into_run_pot(tmp_path, monkeypatch):
+    def fake_run_cmd(cmd):
+        potfile = cmd[cmd.index('--potfile-path') + 1]
+        with open(potfile, 'a', encoding='utf-8') as out:
+            out.write('7c33954r9727aj5urd7blat7nm4deftv:.example.nl:ab:1:\n')
+        return 1, '', ''
+
+    out_dir, records = _run_scheduler_with_wordlists(tmp_path, monkeypatch, total_slices=1, run_cmd=fake_run_cmd)
+
+    assert (out_dir / 'run.pot').read_text(encoding='utf-8') == '7c33954r9727aj5urd7blat7nm4deftv:.example.nl:ab:1:\n'
+    assert records[0]['shared_new_cracks'] == 1
+    assert records[0]['arm_local_cracks'] == 1
+    assert records[0]['arm_local_new_cracks'] == 1
+    assert records[0]['total_cracks'] == 1
+
+
+def test_empty_plaintext_deduplicates_by_hash(tmp_path):
+    from nsec3_candidate_scheduler.scheduler import _append_potfile_pairs, pot_values
+
+    run_pot = tmp_path / 'run.pot'
+    run_pot.write_text('7c33954r9727aj5urd7blat7nm4deftv:.example.nl:ab:1:\n', encoding='utf-8')
+    local_pot = tmp_path / 'local.pot'
+    local_pot.write_text('7c33954r9727aj5urd7blat7nm4deftv:.example.nl:ab:1:\n', encoding='utf-8')
+
+    shared_before = pot_values(run_pot)
+    local_after = pot_values(local_pot)
+    new_pairs = [(h, v) for h, v in local_after.items() if h not in shared_before]
+    _append_potfile_pairs(str(run_pot), new_pairs)
+
+    assert new_pairs == []
+    assert run_pot.read_text(encoding='utf-8').splitlines() == ['7c33954r9727aj5urd7blat7nm4deftv:.example.nl:ab:1:']
+
+
+def test_empty_plaintext_not_passed_to_feedback_generators(tmp_path, monkeypatch):
+    seen = []
+
+    def fake_run_cmd(cmd):
+        potfile = cmd[cmd.index('--potfile-path') + 1]
+        with open(potfile, 'a', encoding='utf-8') as out:
+            out.write('h_empty:.example.nl:ab:1:\n')
+            out.write('h_www:.example.nl:ab:1:www\n')
+        return 1, '', ''
+
+    def fake_on_new_discoveries(self, discoveries, context):
+        seen.append(list(discoveries))
+        return {}
+
+    monkeypatch.setattr('nsec3_candidate_scheduler.arms.parent_domain_feedback.ParentDomainFeedbackArm.on_new_discoveries', fake_on_new_discoveries)
+    _run_scheduler_with_wordlists(
+        tmp_path, monkeypatch,
+        extra_arms=[{'name': 'parent-domain', 'type': 'parent_domain_feedback'}],
+        total_slices=1,
+        run_cmd=fake_run_cmd,
+    )
+
+    assert seen == [['www']]
+
+
+def test_normal_plaintext_merge_and_feedback_behavior_unchanged(tmp_path, monkeypatch):
+    out_dir, _ = _run_scheduler_with_wordlists(
+        tmp_path, monkeypatch,
+        seclists_values=['www'],
+        extra_arms=[{'name': 'parent-domain', 'type': 'parent_domain_feedback'}],
+        total_slices=1,
+    )
+    assert (out_dir / 'run.pot').read_text(encoding='utf-8') == 'h_www:www\n'
+    assert (out_dir / 'feedback' / 'parent-domain' / 'queue.txt').read_text(encoding='utf-8') == ''

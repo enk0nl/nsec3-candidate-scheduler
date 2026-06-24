@@ -27,9 +27,9 @@ class SchedulerContext:
 def utc_now(): return dt.datetime.now(dt.timezone.utc).isoformat()
 def ensure_dir(p): os.makedirs(p, exist_ok=True)
 
-def pot_values(path):
+def pot_values(path, *, allow_empty_plaintext: bool = True):
     if not os.path.exists(path): return {}
-    return {h:v for h,v in iter_potfile_cracks(path)}
+    return {h:v for h,v in iter_potfile_cracks(path, allow_empty_plaintext=allow_empty_plaintext)}
 
 
 
@@ -414,7 +414,7 @@ def run_scheduler(args) -> int:
                 after=pot_values(potfile); prev=after
             else:
                 after=pot_values(potfile); new_pairs=[(h,v) for h,v in after.items() if h not in prev]; prev=after
-            discoveries=[v for _,v in new_pairs]
+            discoveries=[v for _,v in new_pairs if v]
             feedback_expansion_metrics = {}
             for a in arms:
                 expansion = a.on_new_discoveries(discoveries, ctx)
