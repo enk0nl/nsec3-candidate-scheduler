@@ -23,6 +23,9 @@ class SchedulerContext:
     hashcat_bin: str='hashcat'; default_limit: int=1000000; hashcat_optimized_kernels: bool=True
     optimized_kernel_failover: bool=True
     potfile_path_override: str | None = None
+    target_hash_count: int | None = None
+    stop_when_all_hashes_cracked: bool = True
+    target_hash_sides: set[str] | None = None
 
 def utc_now(): return dt.datetime.now(dt.timezone.utc).isoformat()
 def ensure_dir(p): os.makedirs(p, exist_ok=True)
@@ -30,6 +33,69 @@ def ensure_dir(p): os.makedirs(p, exist_ok=True)
 def pot_values(path, *, allow_empty_plaintext: bool = True):
     if not os.path.exists(path): return {}
     return {h:v for h,v in iter_potfile_cracks(path, allow_empty_plaintext=allow_empty_plaintext)}
+
+def count_target_hashes(path: str) -> int | None:
+    sides = read_target_hash_sides(path)
+    return None if sides is None else len(sides)
+
+def read_target_hash_sides(path: str) -> set[str] | None:
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            return {line.strip() for line in f if line.strip()}
+    except OSError:
+        return None
+
+def cracked_target_hash_count(ctx: SchedulerContext, pot: dict[str, str] | None = None) -> int:
+    values = pot_values(ctx.potfile) if pot is None else pot
+    if ctx.target_hash_sides is None:
+        return len(values)
+    return len(set(values) & ctx.target_hash_sides)
+
+def remaining_hash_count(target_hash_count: int | None, total_cracks: int) -> int | None:
+    if target_hash_count is None:
+        return None
+    return max(0, target_hash_count - total_cracks)
+
+def should_stop_all_hashes_cracked(ctx: SchedulerContext, total_cracks: int | None = None) -> bool:
+    if not ctx.stop_when_all_hashes_cracked:
+        return False
+    if ctx.target_hash_count is None or ctx.target_hash_count <= 0:
+        return False
+    cracked = cracked_target_hash_count(ctx) if total_cracks is None else total_cracks
+    return cracked >= ctx.target_hash_count
+
+def hashcat_reports_all_hashes_found(stdout: str, stderr: str) -> bool:
+    text = (stdout + '\n' + stderr).lower()
+    return 'all hashes found as potfile and/or empty entries' in text
+
+def completion_metadata(ctx: SchedulerContext, total_cracks: int) -> dict[str, Any]:
+    return {
+        'completed': True,
+        'completed_reason': 'all_hashes_cracked',
+        'target_hash_count': ctx.target_hash_count,
+        'total_cracks': total_cracks,
+        'remaining_hash_count': remaining_hash_count(ctx.target_hash_count, total_cracks),
+    }
+
+def append_jsonl(path: str, obj: dict[str, Any]) -> None:
+    with open(path, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(obj, separators=(',', ':')) + '\n')
+
+def record_scheduler_completed(ctx: SchedulerContext, total_cracks: int) -> dict[str, Any]:
+    meta = completion_metadata(ctx, total_cracks)
+    event = {
+        'timestamp': utc_now(),
+        'event': 'scheduler_completed',
+        'reason': 'all_hashes_cracked',
+        'target_hash_count': ctx.target_hash_count,
+        'total_cracks': total_cracks,
+        'remaining_hash_count': meta['remaining_hash_count'],
+    }
+    append_jsonl(os.path.join(ctx.out_dir, 'events.jsonl'), event)
+    with open(os.path.join(ctx.out_dir, 'summary.json'), 'w', encoding='utf-8') as f:
+        json.dump(meta, f, separators=(',', ':'))
+        f.write('\n')
+    return meta
 
 
 
@@ -343,7 +409,13 @@ def run_scheduler(args) -> int:
         optimized_kernel_failover = bool(args.optimized_kernel_failover)
     if getattr(args, 'no_optimized_kernels', False):
         optimized_kernels = False
-    ctx=SchedulerContext(args.hashes,args.hash_mode,args.out_dir,args.slice_seconds,potfile,getattr(args,'hashcat_bin','hashcat'),getattr(args,'default_limit',1000000),optimized_kernels,optimized_kernel_failover)
+    cfg_stopping = cfg.get('stopping') or {}
+    stop_when_all_hashes_cracked = bool(cfg_stopping.get('stop_when_all_hashes_cracked', True))
+    if getattr(args, 'stop_when_all_hashes_cracked', None) is not None:
+        stop_when_all_hashes_cracked = bool(args.stop_when_all_hashes_cracked)
+    target_hash_sides = read_target_hash_sides(args.hashes)
+    target_hash_count = None if target_hash_sides is None else len(target_hash_sides)
+    ctx=SchedulerContext(args.hashes,args.hash_mode,args.out_dir,args.slice_seconds,potfile,getattr(args,'hashcat_bin','hashcat'),getattr(args,'default_limit',1000000),optimized_kernels,optimized_kernel_failover,None,target_hash_count,stop_when_all_hashes_cracked,target_hash_sides)
     choose_arm.context=ctx
     for _arm in arms:
         starter=getattr(_arm, 'start', None)
@@ -364,11 +436,18 @@ def run_scheduler(args) -> int:
     attempted_jobs = 0
     skipped_this_completed_slice = set()
     pending_retry = None
+    completed_metadata = None
     try:
         while completed_slices < total_slices or pending_retry is not None:
+            if should_stop_all_hashes_cracked(ctx, cracked_target_hash_count(ctx, prev)):
+                completed_metadata = record_scheduler_completed(ctx, cracked_target_hash_count(ctx, prev))
+                break
             job = attempted_jobs + 1
             choose_arm.skip_once = skipped_this_completed_slice
             if pending_retry is not None:
+                if should_stop_all_hashes_cracked(ctx, cracked_target_hash_count(ctx, prev)):
+                    completed_metadata = record_scheduler_completed(ctx, cracked_target_hash_count(ctx, prev))
+                    break
                 arm, reason, retry_of_job_id, retry_reason = pending_retry
                 pending_retry = None
             else:
@@ -414,6 +493,7 @@ def run_scheduler(args) -> int:
                 after=pot_values(potfile); prev=after
             else:
                 after=pot_values(potfile); new_pairs=[(h,v) for h,v in after.items() if h not in prev]; prev=after
+            all_hashes_found_message = hashcat_reports_all_hashes_found(res.stdout, res.stderr)
             discoveries=[v for _,v in new_pairs if v]
             feedback_expansion_metrics = {}
             for a in arms:
@@ -428,7 +508,7 @@ def run_scheduler(args) -> int:
             optimized_hint = classification.hint if classification and classification.reason in OPTIMIZED_KERNEL_RETRY_REASONS else None
             optimized_failure = bool(classification and classification.retryable_with_unoptimized and classification.reason in OPTIMIZED_KERNEL_RETRY_REASONS)
             invalid_classified_failure = bool(classification and classification.reason in (OPTIMIZED_KERNEL_RETRY_REASONS | {'hashfile_parse_error_all_hashes_token_length'}))
-            valid_work = bool(res.valid_work and res.extra.get('feedback_valid_work', True)) and not invalid_classified_failure
+            valid_work = bool(res.valid_work and res.extra.get('feedback_valid_work', True)) and not invalid_classified_failure and not all_hashes_found_message
             marginal=len(new_pairs) if valid_work else 0
             reward_count = arm_local_new_cracks if use_arm_local else marginal
             reward=(reward_count/res.runtime_seconds) if res.runtime_seconds>0 and valid_work else 0.0
@@ -445,6 +525,7 @@ def run_scheduler(args) -> int:
                 arm.optimized_kernel_failure_count = getattr(arm, 'optimized_kernel_failure_count', 0) + 1
                 arm.last_optimized_kernel_failure_job_id = job
                 arm.optimized_kernel_failure_cooldown_slices = 1
+            cracked_targets = cracked_target_hash_count(ctx, after)
             if console_mode == 'verbose':
                 for unavailable in getattr(choose_arm, 'unavailable', []):
                     print('Unavailable arm: '+json.dumps(unavailable,separators=(',',':')), flush=True)
@@ -467,14 +548,28 @@ def run_scheduler(args) -> int:
                  'arm_local_new_cracks':arm_local_new_cracks if phase == 'warmup' else None,
                  'duplicate_cracks_vs_shared':duplicate_cracks_vs_shared if phase == 'warmup' else None,
                  'reward_used_for_score':reward,
-                 'total_cracks':len(after),'reward':reward,'score_before':score_before,'score_after':arm.score,'exhausted':arm.exhausted,
+                 'target_hash_count':ctx.target_hash_count,
+                 'total_cracks':cracked_targets,
+                 'remaining_hash_count':remaining_hash_count(ctx.target_hash_count, cracked_targets),
+                 'hashcat_all_hashes_found_as_potfile':all_hashes_found_message,
+                 'reward':reward,'score_before':score_before,'score_after':arm.score,'exhausted':arm.exhausted,
                  'forced_cadence_interval':n,'slices_since_last_run':since,'overdue_ratio':(since/n if n and since is not None else None),
                  'unavailable_arms':getattr(choose_arm, 'unavailable', []) if console_mode == 'verbose' else None,
                  'feedback_expansion_metrics':feedback_expansion_metrics or None, **availability_fields, **res.extra}
             with open(jobs_path,'a',encoding='utf-8') as f: f.write(json.dumps(rec,separators=(',',':'))+'\n')
             with open(os.path.join(args.out_dir,'hashcat_logs',f'job_{job:06d}.log'),'w',encoding='utf-8') as f: f.write(res.stdout+'\n'+res.stderr)
             completed_slices += 1
-            if optimized_failure and ctx.optimized_kernel_failover:
+            if should_stop_all_hashes_cracked(ctx, cracked_targets):
+                completed_metadata = record_scheduler_completed(ctx, cracked_targets)
+                pending_retry = None
+                skipped_this_completed_slice = set()
+            elif all_hashes_found_message and should_stop_all_hashes_cracked(ctx):
+                refreshed = pot_values(potfile)
+                prev = refreshed
+                completed_metadata = record_scheduler_completed(ctx, cracked_target_hash_count(ctx, refreshed))
+                pending_retry = None
+                skipped_this_completed_slice = set()
+            elif optimized_failure and ctx.optimized_kernel_failover:
                 if hasattr(arm, 'next_skip') and res.skip_before is not None:
                     arm.next_skip = res.skip_before
                 ctx.hashcat_optimized_kernels = False
@@ -490,10 +585,14 @@ def run_scheduler(args) -> int:
             else:
                 skipped_this_completed_slice = set()
             print_slice_progress(rec, total_slices, console_mode)
+            if completed_metadata is not None:
+                break
     finally:
         for _arm in arms:
             cleaner=getattr(_arm, 'cleanup', None)
             if callable(cleaner): cleaner()
     final_discoveries = len(prev)
+    if completed_metadata is None and should_stop_all_hashes_cracked(ctx, cracked_target_hash_count(ctx, prev)):
+        completed_metadata = record_scheduler_completed(ctx, cracked_target_hash_count(ctx, prev))
     print(format_final_summary(completed_slices, final_discoveries, time.time() - start_time, arms, jobs_path), flush=True)
     return 0

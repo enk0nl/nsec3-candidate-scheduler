@@ -29,7 +29,8 @@ def _run_scheduler_with_wordlists(tmp_path, monkeypatch, *, warmup_scoring='arm_
     seclists = tmp_path / 'seclists.txt'; pcfg = tmp_path / 'pcfg.txt'
     seclists.write_text('\n'.join(seclists_values or ['www', 'test1', 'test2']) + '\n', encoding='utf-8')
     pcfg.write_text('\n'.join(pcfg_values or ['www', 'test2', 'test3']) + '\n', encoding='utf-8')
-    hashes = tmp_path / 'hashes.txt'; hashes.write_text('hash\n', encoding='utf-8')
+    target_hashes = sorted({f'h_{value}' for value in (seclists_values or ['www', 'test1', 'test2']) + (pcfg_values or ['www', 'test2', 'test3'])})
+    hashes = tmp_path / 'hashes.txt'; hashes.write_text('\n'.join(target_hashes) + '\n', encoding='utf-8')
     arms = [
         {'name': 'seclists', 'type': 'dictionary', 'wordlist': str(seclists)},
         {'name': 'pcfg', 'type': 'dictionary', 'wordlist': str(pcfg)},
@@ -94,12 +95,12 @@ def test_warmup_empty_plaintext_is_merged_into_run_pot(tmp_path, monkeypatch):
     def fake_run_cmd(cmd):
         potfile = cmd[cmd.index('--potfile-path') + 1]
         with open(potfile, 'a', encoding='utf-8') as out:
-            out.write('7c33954r9727aj5urd7blat7nm4deftv:.example.nl:ab:1:\n')
+            out.write('h_www:\n')
         return 1, '', ''
 
     out_dir, records = _run_scheduler_with_wordlists(tmp_path, monkeypatch, total_slices=1, run_cmd=fake_run_cmd)
 
-    assert (out_dir / 'run.pot').read_text(encoding='utf-8') == '7c33954r9727aj5urd7blat7nm4deftv:.example.nl:ab:1:\n'
+    assert (out_dir / 'run.pot').read_text(encoding='utf-8') == 'h_www:\n'
     assert records[0]['shared_new_cracks'] == 1
     assert records[0]['arm_local_cracks'] == 1
     assert records[0]['arm_local_new_cracks'] == 1

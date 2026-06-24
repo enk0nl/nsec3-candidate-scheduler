@@ -11,6 +11,7 @@
 | `epsilon` | number | Adaptive exploration probability. |
 | `warmup.scoring` | `arm_local` or `shared_marginal` | Default is `arm_local`. Adaptive scoring always uses shared marginal discoveries. |
 | `hashcat.optimized_kernels` | boolean | Default enabled unless CLI disables it. |
+| `stopping.stop_when_all_hashes_cracked` | boolean | Default true. Stop before scheduling another slice once all target hash sides are present in the shared potfile. |
 | `arms` | array | Arm definitions. |
 
 Arm names are stable identifiers and use `family/mechanism` form. Canonical names include `wordlist/seclists`, `wordlist/pcfg-100m`, `bruteforce/rfc1035-len2-5`, `feedback/predictive-prefix`, `feedback/predictive-suffix`, `feedback/permutation-numeric`, `feedback/static-affix-top5000`, `feedback/parent-domain`, `osint/amass`, and `osint/subfinder`.
@@ -112,3 +113,17 @@ Fully unoptimized operation disables `-O` from the start. In that mode the failo
 ```
 
 CLI precedence is: `--no-optimized-kernels` overrides `hashcat.optimized_kernels`, and `--optimized-kernel-failover` / `--no-optimized-kernel-failover` override `hashcat.optimized_kernel_failover`. Use `--no-optimized-kernels` to start without optimized kernels, `--optimized-kernel-failover` for the default automatic retry policy, and `--no-optimized-kernel-failover` to log optimized-kernel failures without retrying unoptimized.
+
+## All-hashes-cracked stopping
+
+By default, the scheduler stops when all non-empty target hashfile lines are represented by unique hash sides in the shared `run.pot`. Empty plaintext potfile entries count as cracked hashes. The final job that reaches full coverage is recorded in `jobs.jsonl`; no further warm-up, adaptive, forced-cadence, feedback, dictionary, brute-force, OSINT, or retry slices are scheduled afterward.
+
+```json
+{
+  "stopping": {
+    "stop_when_all_hashes_cracked": true
+  }
+}
+```
+
+Use `stopping.stop_when_all_hashes_cracked=false` or the CLI flag `--no-stop-when-all-hashes-cracked` only when intentionally preserving the old behavior. The positive CLI flag `--stop-when-all-hashes-cracked` restores the default.
