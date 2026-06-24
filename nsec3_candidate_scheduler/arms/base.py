@@ -28,6 +28,7 @@ class Arm:
     total_runtime: float = 0.0
     exhausted: bool = False
     last_run_adaptive_slice: int = 0
+    last_run_global_slice: int | None = None
     total_new_cracks: int = 0
     next_skip: int = 0
     keyspace: int | None = None

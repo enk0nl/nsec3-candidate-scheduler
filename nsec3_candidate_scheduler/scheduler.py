@@ -122,18 +122,21 @@ def _feedback_pending_virtual_streams(arm, context) -> int:
             return 0
     return 0
 
-def _feedback_availability(arm, context, current_adaptive_slice, force_queue: bool = False) -> dict[str, Any]:
+def _feedback_availability(arm, context, global_valid_slice_index=0, force_queue: bool = False, **kwargs) -> dict[str, Any]:
+    if 'current_adaptive_slice' in kwargs and global_valid_slice_index == 0:
+        global_valid_slice_index = kwargs['current_adaptive_slice']
     queue_size = arm._queue(context).queue_size_lines()
     pending_virtual_streams = _feedback_pending_virtual_streams(arm, context)
     min_queue_size = int(arm.config.get('min_queue_size', 1))
     min_slices = int(arm.config.get('min_slices_between_runs', 0))
-    slices_since = current_adaptive_slice - arm.last_run_adaptive_slice
+    last_run_global_slice = getattr(arm, 'last_run_global_slice', None)
+    slices_since = None if last_run_global_slice is None else global_valid_slice_index - last_run_global_slice
     active_slice = arm._queue(context).active_slice_is_active()
     runnable = active_slice or queue_size > 0 or pending_virtual_streams > 0
     reason = None
     if arm.exhausted:
         reason = 'exhausted'
-    elif slices_since < min_slices:
+    elif slices_since is not None and slices_since < min_slices:
         reason = 'cooldown'
     elif not runnable:
         reason = 'forced_cadence_empty_queue' if force_queue else 'empty_queue'
@@ -143,18 +146,21 @@ def _feedback_availability(arm, context, current_adaptive_slice, force_queue: bo
         'available': reason is None,
         'availability_reason': reason,
         'min_slices_between_runs': min_slices,
+        'global_valid_slice_index': global_valid_slice_index,
+        'last_run_global_slice': last_run_global_slice,
         'slices_since_last_run': slices_since,
+        'cadence_basis': 'global_valid_slices',
         'min_queue_size': min_queue_size,
         'queue_size': queue_size,
         'pending_virtual_streams': pending_virtual_streams,
         'active_slice': active_slice,
-        'cooldown_satisfied': slices_since >= min_slices,
+        'cooldown_satisfied': slices_since is None or slices_since >= min_slices,
         'runnable': runnable,
     }
 
-def _availability(arm, context, current_adaptive_slice, force_queue: bool = False) -> dict[str, Any]:
+def _availability(arm, context, global_valid_slice_index, force_queue: bool = False) -> dict[str, Any]:
     if arm.type in FEEDBACK_TYPES:
-        return _feedback_availability(arm, context, current_adaptive_slice, force_queue)
+        return _feedback_availability(arm, context, global_valid_slice_index, force_queue)
     available = arm.is_available(context)
     if arm.type in OSINT_TYPES and not available:
         state = getattr(arm, 'state', None)
@@ -168,7 +174,9 @@ def _availability(arm, context, current_adaptive_slice, force_queue: bool = Fals
         return {'available': False, 'availability_reason': reason, 'runnable': False, 'osint_state': state}
     return {'available': available, 'availability_reason': None if available else 'unavailable'}
 
-def choose_arm(arms, schedule, warmup, epsilon, rng, current_adaptive_slice):
+def choose_arm(arms, schedule, warmup, epsilon, rng, current_adaptive_slice, global_valid_slice_index=None):
+    if global_valid_slice_index is None:
+        global_valid_slice_index = current_adaptive_slice
     context = choose_arm.context
     choose_arm.unavailable = []
     skipped_once = getattr(choose_arm, 'skip_once', set())
@@ -176,7 +184,7 @@ def choose_arm(arms, schedule, warmup, epsilon, rng, current_adaptive_slice):
     for a in arms:
         if a.name in skipped_once:
             continue
-        info = _availability(a, context, current_adaptive_slice)
+        info = _availability(a, context, global_valid_slice_index)
         a.last_availability = info
         if info['available']:
             normal.append(a)
@@ -199,9 +207,13 @@ def choose_arm(arms, schedule, warmup, epsilon, rng, current_adaptive_slice):
             continue
         n=a.config.get('force_every_slices')
         if not n: continue
-        since=current_adaptive_slice-a.last_run_adaptive_slice
+        if a.type in FEEDBACK_TYPES:
+            last_run_global_slice = getattr(a, 'last_run_global_slice', None)
+            since = global_valid_slice_index if last_run_global_slice is None else global_valid_slice_index - last_run_global_slice
+        else:
+            since = current_adaptive_slice - a.last_run_adaptive_slice
         if since < n: continue
-        info = _availability(a, context, current_adaptive_slice, force_queue=True)
+        info = _availability(a, context, global_valid_slice_index, force_queue=True)
         if info['available']:
             a.last_availability = info
             due.append((since/n,a.runs,a.total_runtime,a.name,a))
@@ -428,7 +440,7 @@ def run_scheduler(args) -> int:
     warmup_baseline=pot_values(warmup_baseline_potfile)
     warmup_potfiles_dir=os.path.join(args.out_dir,'warmup_potfiles')
     if warmup_scoring == 'arm_local': ensure_dir(warmup_potfiles_dir)
-    prev=pot_values(potfile); current_adaptive_slice=0
+    prev=pot_values(potfile); current_adaptive_slice=0; global_valid_slice_index=0
     total_slices=args.total_slices or 0
     completed_slices = 0
     start_time = time.time()
@@ -453,7 +465,7 @@ def run_scheduler(args) -> int:
             else:
                 retry_of_job_id = None
                 retry_reason = None
-                arm,reason=choose_arm(arms,args.schedule,warmup if args.schedule=='adaptive' else [],epsilon,rng,current_adaptive_slice)
+                arm,reason=choose_arm(arms,args.schedule,warmup if args.schedule=='adaptive' else [],epsilon,rng,current_adaptive_slice,global_valid_slice_index)
             if arm is None:
                 if skipped_this_completed_slice:
                     skipped_this_completed_slice = set()
@@ -513,13 +525,26 @@ def run_scheduler(args) -> int:
             reward_count = arm_local_new_cracks if use_arm_local else marginal
             reward=(reward_count/res.runtime_seconds) if res.runtime_seconds>0 and valid_work else 0.0
             scored = bool(valid_work)
+            counts_for_cadence = bool(valid_work and scored)
+            cadence_slice_index = global_valid_slice_index
             if valid_work:
                 arm.score=arm.score+alpha*(reward-arm.score)
                 arm.runs+=1; arm.total_runtime+=res.runtime_seconds; arm.total_new_cracks+=marginal
             if args.schedule=='adaptive' and reason!='warmup' and valid_work:
                 arm.last_run_adaptive_slice=current_adaptive_slice; current_adaptive_slice+=1
-            n=arm.config.get('force_every_slices'); since=(current_adaptive_slice-arm.last_run_adaptive_slice) if n else None
-            availability_fields = {k: v for k, v in getattr(arm, 'last_availability', {}).items() if k != 'available'}
+            if counts_for_cadence:
+                if arm.type in FEEDBACK_TYPES:
+                    arm.last_run_global_slice = cadence_slice_index
+                global_valid_slice_index += 1
+            n=arm.config.get('force_every_slices')
+            last_run_global_slice = getattr(arm, 'last_run_global_slice', None)
+            if arm.type in FEEDBACK_TYPES:
+                since=(global_valid_slice_index-last_run_global_slice) if n and last_run_global_slice is not None else (global_valid_slice_index if n else None)
+            else:
+                since=(current_adaptive_slice-arm.last_run_adaptive_slice) if n else None
+            min_slices_between_runs = int(arm.config.get('min_slices_between_runs', 0)) if arm.type in FEEDBACK_TYPES else None
+            cooldown_satisfied = (last_run_global_slice is None or (global_valid_slice_index - last_run_global_slice) >= min_slices_between_runs) if arm.type in FEEDBACK_TYPES else None
+            availability_fields = {k: v for k, v in getattr(arm, 'last_availability', {}).items() if k not in {'available', 'global_valid_slice_index', 'last_run_global_slice', 'slices_since_last_run', 'cadence_basis', 'cooldown_satisfied', 'min_slices_between_runs'}}
             if classification and classification.reason in OPTIMIZED_KERNEL_RETRY_REASONS and not ctx.optimized_kernel_failover:
                 availability_fields['availability_reason'] = 'optimized_kernel_failure_no_failover'
                 arm.optimized_kernel_failure_count = getattr(arm, 'optimized_kernel_failure_count', 0) + 1
@@ -553,6 +578,9 @@ def run_scheduler(args) -> int:
                  'remaining_hash_count':remaining_hash_count(ctx.target_hash_count, cracked_targets),
                  'hashcat_all_hashes_found_as_potfile':all_hashes_found_message,
                  'reward':reward,'score_before':score_before,'score_after':arm.score,'exhausted':arm.exhausted,
+                 'global_valid_slice_index':global_valid_slice_index,'current_adaptive_slice':current_adaptive_slice,
+                 'last_run_global_slice':last_run_global_slice,'cadence_basis':'global_valid_slices' if arm.type in FEEDBACK_TYPES else None,
+                 'min_slices_between_runs':min_slices_between_runs,'cooldown_satisfied':cooldown_satisfied,
                  'forced_cadence_interval':n,'slices_since_last_run':since,'overdue_ratio':(since/n if n and since is not None else None),
                  'unavailable_arms':getattr(choose_arm, 'unavailable', []) if console_mode == 'verbose' else None,
                  'feedback_expansion_metrics':feedback_expansion_metrics or None, **availability_fields, **res.extra}
