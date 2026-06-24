@@ -6,6 +6,8 @@
 | --- | --- |
 | `jobs.jsonl` | Slice records and OSINT completion events. |
 | `run.pot` | Shared hashcat potfile. |
+| `events.jsonl` | Scheduler lifecycle events, including all-hashes-cracked completion. |
+| `summary.json` | Terminal completion metadata when the scheduler stops because all hashes are cracked. |
 | `warmup_baseline.potfile` | Baseline for arm-local warm-up scoring. |
 | `warmup_potfiles/<safe-arm-name>.potfile` | Per-arm warm-up potfiles when `warmup.scoring=arm_local`. |
 | `hashcat_logs/job_000001.log` | Combined stdout/stderr per executed slice. |
@@ -16,9 +18,15 @@ Configured arm names are preserved in logs as `arm`. File paths use `nsec3_candi
 
 Hashcat potfiles may contain an empty plaintext value. The scheduler preserves such entries for crack accounting and shared `run.pot` merging, but it does not feed empty plaintexts into DNS feedback generators.
 
+By default, once the shared `run.pot` contains all target hash sides, the scheduler records `completed_reason="all_hashes_cracked"` and exits before selecting another slice. If hashcat reports `All hashes found as potfile and/or empty entries`, the scheduler refreshes the shared potfile accounting and stops when full coverage is confirmed. That no-progress invocation is not valid scored work.
+
 ## `jobs.jsonl`
 
 Slice records include `arm`, `arm_family`, `arm_short_name`, `arm_type`, `selection_reason`, `requested_slice_seconds`, `runtime_seconds`, score fields, crack counts, hashcat exit status, and arm-specific metrics. OSINT completion records use `event="osint_completed"` with `status` equal to `ready`, `exhausted`, or `failed`.
+
+Slice records include `target_hash_count`, `total_cracks`, and `remaining_hash_count` when the target hash count can be read at startup. Completion metadata is written to `summary.json` and `events.jsonl` with `completed=true`, `completed_reason="all_hashes_cracked"`, `target_hash_count`, `total_cracks`, and `remaining_hash_count`.
+
+Troubleshooting: if a run keeps launching slices after hashcat reports `All hashes found as potfile and/or empty entries`, the expected behavior is to stop with `completed_reason="all_hashes_cracked"`. Check `events.jsonl` and `summary.json`; if full coverage is not detected, verify that the shared `run.pot` contains the target hash sides, including entries with empty plaintexts.
 
 ## Feedback state
 
