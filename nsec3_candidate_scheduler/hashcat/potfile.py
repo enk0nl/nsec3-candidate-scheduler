@@ -6,13 +6,16 @@ from typing import Iterator, Tuple
 from nsec3_candidate_scheduler.feedback.normalize import normalize_dns_name
 
 
-def iter_potfile_cracks(path) -> Iterator[Tuple[str, str]]:
+def iter_potfile_cracks(path, *, allow_empty_plaintext: bool = False) -> Iterator[Tuple[str, str]]:
     with Path(path).open('r', encoding='utf-8', errors='replace') as f:
         for raw in f:
-            line = raw.rstrip('\n')
+            line = raw.rstrip('\n\r')
             if not line or ':' not in line:
                 continue
             hash_part, value = line.rsplit(':', 1)
+            if allow_empty_plaintext and value.strip() == '':
+                yield hash_part, ''
+                continue
             normalized = normalize_dns_name(value)
             if normalized is None:
                 continue
